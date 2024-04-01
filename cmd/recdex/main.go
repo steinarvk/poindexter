@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
@@ -155,6 +156,8 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 		return err
 	}
 
+	t0 := time.Now()
+
 	nsid, err := d.GetNamespace(tx, "main")
 	if err != nil {
 		tx.Rollback()
@@ -164,11 +167,11 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 	insertRecordsStmt, err := tx.Prepare(`
 		INSERT INTO records (
 			record_namespace,
-			record_uuid,
+			record_id,
 			record_timestamp,
 			record_hash,
 			record_data
-		) VALUES ($1, $2, $3, $4, $5) RETURNING record_id
+		) VALUES ($1, $2, $3, $4, $5)
 	`)
 	if err != nil {
 		tx.Rollback()
@@ -200,8 +203,7 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 			return err
 		}
 
-		var recordID int
-		err := insertRecordsStmt.QueryRow(nsid, record.RecordID, record.Timestamp, record.Hash, record.CanonicalJSON).Scan(&recordID)
+		_, err := insertRecordsStmt.Exec(nsid, record.RecordID, record.Timestamp, record.Hash, record.CanonicalJSON)
 
 		if pqErr, ok := err.(*pq.Error); ok {
 			if pqErr.Code == "23505" {
@@ -223,7 +225,8 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 		}
 		numRecords++
 
-		log.Printf("Inserted record %d of %d", recordNo+1, numTotalRecords)
+		duration := time.Since(t0)
+		log.Printf("Inserted record %d of %d after %v", recordNo+1, numTotalRecords, duration)
 
 		for _, k := range record.Fields {
 			keyID, err := d.GetKey(tx, nsid, k)
@@ -235,14 +238,14 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 			values, hasValue := record.FieldValues[k]
 			if !hasValue {
 				numIndexEntries++
-				if _, err := insertIndexStmt.Exec(nsid, keyID, recordID, nil); err != nil {
+				if _, err := insertIndexStmt.Exec(nsid, keyID, record.RecordID, nil); err != nil {
 					tx.Rollback()
 					return err
 				}
 			} else {
 				for _, value := range values {
 					numIndexEntries++
-					if _, err := insertIndexStmt.Exec(nsid, keyID, recordID, value); err != nil {
+					if _, err := insertIndexStmt.Exec(nsid, keyID, record.RecordID, value); err != nil {
 						tx.Rollback()
 						return err
 					}
