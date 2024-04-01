@@ -85,10 +85,27 @@ func Main() {
 		},
 	}
 
-	rootCmd.AddCommand(serveCmd, syncCmd, configCmd)
+	var listClients = &cobra.Command{
+		Use:   "list-clients",
+		Short: "List clients who have accessed data",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return errNotImplemented
+		},
+	}
+
+	var adminCmd = &cobra.Command{
+		Use:   "admin",
+		Short: "Admin commands that connect directly to the database",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return errNotImplemented
+		},
+	}
+
+	rootCmd.AddCommand(serveCmd, syncCmd, configCmd, adminCmd)
 	configCmd.AddCommand(serverCmd, directoryCmd)
 	syncCmd.AddCommand(watchCmd)
 	serverCmd.AddCommand(createServerCmd, addClientCmd, grantAccessCmd)
+	adminCmd.AddCommand(listClients)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
