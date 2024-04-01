@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/steinarvk/recdex/lib/config"
 	"github.com/steinarvk/recdex/lib/server"
 )
 
@@ -19,10 +20,21 @@ func Main() {
 		Use:   "serve",
 		Short: "Start the server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			serv, err := server.New()
+			configValue := os.Getenv("RECDEX_CONFIG")
+			if configValue == "" {
+				return fmt.Errorf("RECDEX_CONFIG environment variable not set")
+			}
+
+			cfg, err := config.Load(configValue)
 			if err != nil {
 				return err
 			}
+
+			serv, err := server.New(server.WithConfig(*cfg))
+			if err != nil {
+				return err
+			}
+
 			return serv.Run()
 		},
 	}
