@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 	"github.com/steinarvk/recdex/lib/flatten"
@@ -116,7 +117,7 @@ func getOrCreateKey(tx *sql.Tx, namespaceID int, keyName string) (int, error) {
 
 	log.Printf("getOrCreateKey: %d, %s", namespaceID, keyName)
 
-	err := tx.QueryRow("SELECT key_id FROM indexing_keys WHERE namespace_id = $1 AND key_name = $2", namespaceID, keyName).Scan(&keyID)
+	err := tx.QueryRow("SELECT key_id FROM indexing_keys WHERE namespace_id = $1 AND key_name = ANY($2)", namespaceID, keyName).Scan(&keyID)
 	switch {
 	case err == sql.ErrNoRows:
 		err = tx.QueryRow("INSERT INTO indexing_keys(namespace_id, key_name) VALUES($1, $2) RETURNING key_id", namespaceID, keyName).Scan(&keyID)
@@ -151,7 +152,92 @@ func getOrCreateNamespace(tx *sql.Tx, namespaceName string) (int, error) {
 	return namespaceID, nil
 }
 
-func (d *DB) InsertRecords(records []*flatten.Record) error {
+func (d *DB) GetKeys(tx *sql.Tx, namespaceID int, keysRequired map[string]struct{}) (map[string]int, error) {
+	rv := map[string]int{}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	kc, ok := d.keyCache[namespaceID]
+	if !ok {
+		kc = map[string]int{}
+		d.keyCache[namespaceID] = kc
+	}
+
+	var keysToQuery []string
+	remainingKeys := map[string]struct{}{}
+	for keyName := range keysRequired {
+		keyID, ok := kc[keyName]
+		if ok {
+			rv[keyName] = keyID
+		} else {
+			keysToQuery = append(keysToQuery, keyName)
+			remainingKeys[keyName] = struct{}{}
+		}
+		rv[keyName] = keyID
+	}
+
+	doFetchKeys := func() error {
+		if len(keysToQuery) == 0 {
+			return nil
+		}
+
+		rows, err := tx.Query("SELECT key_id, key_name FROM indexing_keys WHERE namespace_id = $1 AND key_name = ANY($2)", namespaceID, pq.Array(keysToQuery))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var keyID int
+			var keyName string
+
+			if err := rows.Scan(&keyID, &keyName); err != nil {
+				return err
+			}
+
+			rv[keyName] = keyID
+			kc[keyName] = keyID
+			delete(remainingKeys, keyName)
+		}
+
+		return nil
+	}
+
+	if err := doFetchKeys(); err != nil {
+		return nil, err
+	}
+
+	if len(remainingKeys) > 0 {
+		copyKeysStmt, err := tx.Prepare(pq.CopyIn("indexing_keys", "namespace_id", "key_name"))
+		if err != nil {
+			return nil, err
+		}
+
+		for keyName := range remainingKeys {
+			_, err := copyKeysStmt.Exec(namespaceID, keyName)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if _, err := copyKeysStmt.Exec(); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := doFetchKeys(); err != nil {
+		return nil, err
+	}
+
+	if len(remainingKeys) > 0 {
+		return nil, errors.New("internal error: some keys still missing after insert")
+	}
+
+	return kc, nil
+}
+
+func (d *DB) InsertRecordBatch(records []*flatten.Record) error {
 	tx, err := d.db.Begin()
 	if err != nil {
 		return err
@@ -165,35 +251,71 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 		return err
 	}
 
-	keyIDs := map[string]int{}
-
+	keysRequiredMap := map[string]struct{}{}
+	toInsertRecordIDs := map[uuid.UUID]struct{}{}
+	var allRecordIDs []uuid.UUID
+	var allRecordHashes []string
 	for _, record := range records {
+		allRecordIDs = append(allRecordIDs, record.RecordUUID)
+		allRecordHashes = append(allRecordHashes, record.Hash)
+		toInsertRecordIDs[record.RecordUUID] = struct{}{}
 		for _, k := range record.Fields {
-			keyID, err := d.GetKey(tx, nsid, k)
-			if err != nil {
-				tx.Rollback()
-				return err
-			}
-			keyIDs[k] = keyID
+			keysRequiredMap[k] = struct{}{}
 		}
 	}
 
-	log.Printf("ready with %v field names at %v", len(keyIDs), time.Since(t0))
+	keyIDs, err := d.GetKeys(tx, nsid, keysRequiredMap)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
 
-	copyRecordsStmt, err := tx.Prepare(pq.CopyIn("records", "record_namespace", "record_id", "record_timestamp", "record_hash", "record_data"))
+	rows, err := tx.Query("SELECT record_id FROM records WHERE namespace_id = $1 AND (record_id = ANY($2) OR record_hash = ANY($3))", nsid, pq.Array(allRecordIDs), pq.Array(allRecordHashes))
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var recordID uuid.UUID
+		if err := rows.Scan(&recordID); err != nil {
+			tx.Rollback()
+			return err
+		}
+		log.Printf("already exists: %s", recordID)
+		delete(toInsertRecordIDs, recordID)
+	}
+
+	if len(toInsertRecordIDs) == 0 {
+		log.Printf("all records already present")
+		return nil
+	}
+
+	log.Printf("ready with %v field names at %v; to insert %d/%d", len(keyIDs), time.Since(t0), len(toInsertRecordIDs), len(records))
+
+	copyRecordsStmt, err := tx.Prepare(pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data"))
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("error preparing copy records: %w", err)
 	}
 
-	numTotalRecords := len(records)
+	numTotalRecords := len(toInsertRecordIDs)
+
+	var numInsertedRecords, numIndexEntriesInserted int
 
 	for recordNo, record := range records {
-		_, err := copyRecordsStmt.Exec(nsid, record.RecordID, record.Timestamp, record.Hash, record.CanonicalJSON)
+		_, present := toInsertRecordIDs[record.RecordUUID]
+		if !present {
+			continue
+		}
+
+		_, err := copyRecordsStmt.Exec(nsid, record.RecordUUID, record.Timestamp, record.Hash, record.CanonicalJSON)
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("error copying record: %w", err)
 		}
+
+		numInsertedRecords++
 
 		duration := time.Since(t0)
 		log.Printf("Inserted record %d of %d after %v", recordNo+1, numTotalRecords, duration)
@@ -210,30 +332,11 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 		return fmt.Errorf("error preparing copy index: %w", err)
 	}
 
-	var numRecords, numIndexEntries int
-
 	for recordNo, record := range records {
-		/*
-			if pqErr, ok := err.(*pq.Error); ok {
-				if pqErr.Code == "23505" {
-					log.Printf("Skipping duplicate record %d of %d violated constraint %s", recordNo+1, numTotalRecords, pqErr.Constraint)
-
-					_, rollbackErr := tx.Exec("ROLLBACK TO SAVEPOINT before_insert")
-					if rollbackErr != nil {
-						return err
-					}
-
-					continue
-				} else {
-					tx.Rollback()
-					return err
-				}
-			} else if err != nil {
-				tx.Rollback()
-				return err
-			}
-		*/
-		numRecords++
+		_, present := toInsertRecordIDs[record.RecordUUID]
+		if !present {
+			continue
+		}
 
 		duration := time.Since(t0)
 		log.Printf("Inserted index for record %d of %d after %v", recordNo+1, numTotalRecords, duration)
@@ -247,16 +350,16 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 
 			values, hasValue := record.FieldValues[k]
 			if !hasValue {
-				numIndexEntries++
+				numIndexEntriesInserted++
 
-				if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordID, nil); err != nil {
+				if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordUUID, nil); err != nil {
 					tx.Rollback()
 					return fmt.Errorf("error copying index entry: %w", err)
 				}
 			} else {
 				for _, value := range values {
-					numIndexEntries++
-					if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordID, string(value)); err != nil {
+					numIndexEntriesInserted++
+					if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordUUID, string(value)); err != nil {
 						tx.Rollback()
 						return fmt.Errorf("error copying index entry: %w", err)
 					}
@@ -274,7 +377,7 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 		log.Fatal(err)
 	}
 
-	log.Printf("Inserted %d records and %d index entries after %v", numRecords, numIndexEntries, time.Since(t0))
+	log.Printf("%d/%d records were new; inserted %d records and %d index entries after %v", len(toInsertRecordIDs), len(records), numInsertedRecords, numIndexEntriesInserted, time.Since(t0))
 
 	return nil
 }
@@ -303,5 +406,5 @@ func mainCore() error {
 		return err
 	}
 
-	return d.InsertRecords(records)
+	return d.InsertRecordBatch(records)
 }

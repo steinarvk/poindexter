@@ -5,16 +5,16 @@ CREATE TABLE namespaces (
 
 CREATE TABLE records (
     record_id UUID PRIMARY KEY,
-    record_namespace INTEGER NOT NULL,
+    namespace_id INTEGER NOT NULL,
     record_timestamp TIMESTAMP WITH TIME ZONE,
     record_hash TEXT NOT NULL,
     record_data TEXT,
-    CONSTRAINT fk_namespace FOREIGN KEY (record_namespace) REFERENCES namespaces (namespace_id),
-    CONSTRAINT uniq_namespace_hash UNIQUE (record_namespace, record_hash)
+    CONSTRAINT fk_namespace FOREIGN KEY (namespace_id) REFERENCES namespaces (namespace_id),
+    CONSTRAINT uniq_namespace_hash UNIQUE (namespace_id, record_hash)
 );
 
-CREATE INDEX idx_record_namespace_uuid ON records (record_namespace, record_id);
-CREATE INDEX idx_record_namespace_timestamp ON records (record_namespace, record_timestamp);
+CREATE INDEX idx_namespace_id_uuid ON records (namespace_id, record_id);
+CREATE INDEX idx_namespace_id_timestamp ON records (namespace_id, record_timestamp);
 
 CREATE TABLE indexing_keys (
     key_id SERIAL PRIMARY KEY,

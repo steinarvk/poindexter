@@ -5,13 +5,33 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	canonicaljson "github.com/gibson042/canonicaljson-go"
 	"github.com/google/uuid"
 )
+
+var validIDFieldNames = []string{
+	"record_id",
+	"record_uuid",
+	"event_id",
+	"event_uuid",
+	"id",
+	"uuid",
+}
+
+var validTimestampFieldNames = []string{
+	"timestamp",
+	"record_timestamp",
+	"event_timestamp",
+	"record_time",
+	"event_time",
+	"time",
+}
 
 type PathElementKind int
 
@@ -34,12 +54,80 @@ type Flattener struct {
 }
 
 type Record struct {
-	RecordID      string
+	RecordUUID    uuid.UUID
 	Timestamp     time.Time
 	Hash          string
 	FieldValues   map[string][][]byte
 	Fields        []string
 	CanonicalJSON string
+}
+
+func interpretFloatAsTimestamp(value float64) (time.Time, error) {
+	multipliers := []float64{
+		1.0,          // seconds
+		1000.0,       // milliseconds
+		1000000.0,    // microseconds
+		1000000000.0, // nanoseconds
+	}
+	minReasonableYear := 2000
+	maxReasonableYear := 2100
+	for _, multiplier := range multipliers {
+		seconds := int64(math.Floor(value / multiplier))
+		fractionalSeconds := value - float64(seconds)*multiplier
+		nanoseconds := int64(fractionalSeconds * 1e9)
+		t := time.Unix(seconds, nanoseconds)
+		if t.Year() >= minReasonableYear && t.Year() <= maxReasonableYear {
+			return t, nil
+		}
+	}
+	return time.Time{}, errors.New("invalid timestamp")
+}
+
+func interpretIntAsTimestamp(value int64) (time.Time, error) {
+	multipliers := []int64{
+		1,          // seconds
+		1000,       // milliseconds
+		1000000,    // microseconds
+		1000000000, // nanoseconds
+	}
+	minReasonableYear := 2000
+	maxReasonableYear := 2100
+	for _, multiplier := range multipliers {
+		t := time.Unix(value/multiplier, value%multiplier)
+		if t.Year() >= minReasonableYear && t.Year() <= maxReasonableYear {
+			return t, nil
+		}
+	}
+	return time.Time{}, errors.New("invalid timestamp")
+}
+
+func interpretTimestamp(value interface{}) (time.Time, error) {
+	allowedStringFormats := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+
+	switch value := value.(type) {
+	case string:
+		parsedInt, err := strconv.ParseInt(value, 10, 64)
+		if err == nil {
+			return interpretIntAsTimestamp(parsedInt)
+		}
+
+		for _, format := range allowedStringFormats {
+			t, err := time.Parse(format, value)
+			if err == nil {
+				return t, nil
+			}
+		}
+
+		return time.Time{}, errors.New("invalid timestamp")
+	case float64:
+		return interpretFloatAsTimestamp(value)
+	default:
+		return time.Time{}, errors.New("invalid timestamp")
+	}
+
 }
 
 func visitJSON(elements []PathElement, value interface{}, visit func([]PathElement, interface{}) (bool, error)) error {
@@ -226,11 +314,49 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 		return nil, err
 	}
 
-	// TODO extract UUID from record, only generate a new one as a last resort
-	recordUUID := uuid.NewString()
+	var recordID string
+	for _, idFieldName := range validIDFieldNames {
+		value, ok := unmarshalledObj[idFieldName]
+		if ok {
+			valueString, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid ID field %q: not a string", idFieldName)
+			}
+			if ok {
+				recordID = valueString
+				break
+			}
+		}
+	}
+	var recordUUID uuid.UUID
+	if recordID != "" {
+		parsed, err := uuid.Parse(recordID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid UUID in record: %w", err)
+		}
+		recordUUID = parsed
+	} else {
+		recordUUID = uuid.New()
+	}
 
-	// TODO extract timestamp from record, only use current time as a last resort
-	recordTimestamp := time.Now()
+	var timestampValue interface{}
+	for _, timestampFieldName := range validTimestampFieldNames {
+		value, ok := unmarshalledObj[timestampFieldName]
+		if ok {
+			timestampValue = value
+			break
+		}
+	}
+	var recordTimestamp time.Time
+	if timestampValue != nil {
+		t, err := interpretTimestamp(timestampValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timestamp in record: %w", err)
+		}
+		recordTimestamp = t
+	} else {
+		recordTimestamp = time.Now()
+	}
 
 	var fieldNames []string
 	for k := range fieldsPresent {
@@ -239,7 +365,7 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 	sort.Strings(fieldNames)
 
 	return &Record{
-		RecordID:      recordUUID,
+		RecordUUID:    recordUUID,
 		Timestamp:     recordTimestamp,
 		Hash:          hexlify(recordHash),
 		FieldValues:   fieldValues,
