@@ -101,11 +101,28 @@ func Main() {
 		},
 	}
 
-	rootCmd.AddCommand(serveCmd, syncCmd, configCmd, adminCmd)
+	var flattenCmd = &cobra.Command{
+		Use:   "flatten",
+		Short: "Flatten a JSON file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return errNotImplemented
+		},
+	}
+
+	var scratchCmd = &cobra.Command{
+		Use:   "scratch",
+		Short: "Unstable commands to test functionality",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return errNotImplemented
+		},
+	}
+
+	rootCmd.AddCommand(serveCmd, syncCmd, configCmd, adminCmd, scratchCmd)
 	configCmd.AddCommand(serverCmd, directoryCmd)
 	syncCmd.AddCommand(watchCmd)
 	serverCmd.AddCommand(createServerCmd, addClientCmd, grantAccessCmd)
 	adminCmd.AddCommand(listClients)
+	scratchCmd.AddCommand(flattenCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
