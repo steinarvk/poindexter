@@ -39,7 +39,7 @@ type Record struct {
 	Hash          string
 	FieldValues   map[string][][]byte
 	Fields        []string
-	CanonicalJSON []byte
+	CanonicalJSON string
 }
 
 func visitJSON(elements []PathElement, value interface{}, visit func([]PathElement, interface{}) (bool, error)) error {
@@ -244,6 +244,6 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 		Hash:          hexlify(recordHash),
 		FieldValues:   fieldValues,
 		Fields:        fieldNames,
-		CanonicalJSON: canonicalForm,
+		CanonicalJSON: string(canonicalForm),
 	}, nil
 }

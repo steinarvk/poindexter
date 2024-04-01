@@ -256,7 +256,7 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 			} else {
 				for _, value := range values {
 					numIndexEntries++
-					if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordID, value); err != nil {
+					if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordID, string(value)); err != nil {
 						tx.Rollback()
 						return fmt.Errorf("error copying index entry: %w", err)
 					}
