@@ -237,18 +237,67 @@ func (d *DB) GetKeys(tx *sql.Tx, namespaceID int, keysRequired map[string]struct
 	return kc, nil
 }
 
-func (d *DB) InsertRecordBatch(records []*flatten.Record) error {
+type InsertionResult struct {
+	RecordUUID uuid.UUID
+	Ok         bool
+	Duplicate  bool
+	Inserted   bool
+	Error      error
+}
+
+type InsertionResultSummary struct {
+	NumOk        int
+	NumDuplicate int
+	NumInserted  int
+	NumError     int
+}
+
+type BatchInsertionResult struct {
+	Results []InsertionResult
+	Summary InsertionResultSummary
+}
+
+func summarize(result []InsertionResult) *BatchInsertionResult {
+	rv := BatchInsertionResult{
+		Results: result,
+	}
+	for _, r := range result {
+		if r.Ok {
+			rv.Summary.NumOk++
+		}
+		if r.Duplicate {
+			rv.Summary.NumDuplicate++
+		}
+		if r.Inserted {
+			rv.Summary.NumInserted++
+		}
+		if r.Error != nil {
+			rv.Summary.NumError++
+		}
+	}
+	return &rv
+}
+
+func (d *DB) InsertRecordBatch(records []*flatten.Record) (*BatchInsertionResult, error) {
+	var results []InsertionResult
+
 	tx, err := d.db.Begin()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var success bool
+
+	defer func() {
+		if !success {
+			tx.Rollback()
+		}
+	}()
 
 	t0 := time.Now()
 
 	nsid, err := d.GetNamespace(tx, "main")
 	if err != nil {
-		tx.Rollback()
-		return err
+		return nil, err
 	}
 
 	keysRequiredMap := map[string]struct{}{}
@@ -266,86 +315,78 @@ func (d *DB) InsertRecordBatch(records []*flatten.Record) error {
 
 	keyIDs, err := d.GetKeys(tx, nsid, keysRequiredMap)
 	if err != nil {
-		tx.Rollback()
-		return err
+		return nil, err
 	}
 
 	rows, err := tx.Query("SELECT record_id FROM records WHERE namespace_id = $1 AND (record_id = ANY($2) OR record_hash = ANY($3))", nsid, pq.Array(allRecordIDs), pq.Array(allRecordHashes))
 	if err != nil {
-		tx.Rollback()
-		return err
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var recordID uuid.UUID
 		if err := rows.Scan(&recordID); err != nil {
-			tx.Rollback()
-			return err
+			return nil, err
 		}
-		log.Printf("already exists: %s", recordID)
+		results = append(results, InsertionResult{
+			RecordUUID: recordID,
+			Ok:         true,
+			Duplicate:  true,
+		})
 		delete(toInsertRecordIDs, recordID)
 	}
 
 	if len(toInsertRecordIDs) == 0 {
-		log.Printf("all records already present")
-		return nil
+		return summarize(results), nil
 	}
-
-	log.Printf("ready with %v field names at %v; to insert %d/%d", len(keyIDs), time.Since(t0), len(toInsertRecordIDs), len(records))
 
 	copyRecordsStmt, err := tx.Prepare(pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data"))
 	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("error preparing copy records: %w", err)
+		return nil, fmt.Errorf("error preparing copy records: %w", err)
 	}
-
-	numTotalRecords := len(toInsertRecordIDs)
 
 	var numInsertedRecords, numIndexEntriesInserted int
 
-	for recordNo, record := range records {
+	for _, record := range records {
 		_, present := toInsertRecordIDs[record.RecordUUID]
 		if !present {
 			continue
 		}
 
+		results = append(results, InsertionResult{
+			RecordUUID: record.RecordUUID,
+			Ok:         true,
+			Duplicate:  false,
+			Inserted:   true,
+		})
+
 		_, err := copyRecordsStmt.Exec(nsid, record.RecordUUID, record.Timestamp, record.Hash, record.CanonicalJSON)
 		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("error copying record: %w", err)
+			return nil, fmt.Errorf("error copying record: %w", err)
 		}
 
 		numInsertedRecords++
-
-		duration := time.Since(t0)
-		log.Printf("Inserted record %d of %d after %v", recordNo+1, numTotalRecords, duration)
 	}
 
 	if _, err := copyRecordsStmt.Exec(); err != nil {
-		tx.Rollback()
-		return err
+		return nil, fmt.Errorf("error copying record (flush): %w", err)
 	}
 
 	copyIndexStmt, err := tx.Prepare(pq.CopyIn("indexing_data", "namespace_id", "key_id", "record_id", "value"))
 	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("error preparing copy index: %w", err)
+		return nil, fmt.Errorf("error preparing copy index: %w", err)
 	}
 
-	for recordNo, record := range records {
+	for _, record := range records {
 		_, present := toInsertRecordIDs[record.RecordUUID]
 		if !present {
 			continue
 		}
 
-		duration := time.Since(t0)
-		log.Printf("Inserted index for record %d of %d after %v", recordNo+1, numTotalRecords, duration)
-
 		for _, k := range record.Fields {
 			keyID, ok := keyIDs[k]
 			if !ok {
-				tx.Rollback()
-				return errors.New("key not found in keyIDs map; internal error")
+				return nil, errors.New("key not found in keyIDs map; internal error")
 			}
 
 			values, hasValue := record.FieldValues[k]
@@ -353,15 +394,13 @@ func (d *DB) InsertRecordBatch(records []*flatten.Record) error {
 				numIndexEntriesInserted++
 
 				if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordUUID, nil); err != nil {
-					tx.Rollback()
-					return fmt.Errorf("error copying index entry: %w", err)
+					return nil, fmt.Errorf("error copying index entry: %w", err)
 				}
 			} else {
 				for _, value := range values {
 					numIndexEntriesInserted++
 					if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordUUID, string(value)); err != nil {
-						tx.Rollback()
-						return fmt.Errorf("error copying index entry: %w", err)
+						return nil, fmt.Errorf("error copying index entry: %w", err)
 					}
 				}
 			}
@@ -369,17 +408,17 @@ func (d *DB) InsertRecordBatch(records []*flatten.Record) error {
 	}
 
 	if _, err := copyIndexStmt.Exec(); err != nil {
-		tx.Rollback()
-		return err
+		return nil, fmt.Errorf("error copying index (flush): %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		log.Fatal(err)
 	}
+	success = true
 
 	log.Printf("%d/%d records were new; inserted %d records and %d index entries after %v", len(toInsertRecordIDs), len(records), numInsertedRecords, numIndexEntriesInserted, time.Since(t0))
 
-	return nil
+	return summarize(results), nil
 }
 
 func mainCore() error {
@@ -406,5 +445,11 @@ func mainCore() error {
 		return err
 	}
 
-	return d.InsertRecordBatch(records)
+	result, err := d.InsertRecordBatch(records)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("result: %+v", result.Summary)
+	return nil
 }

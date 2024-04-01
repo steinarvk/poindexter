@@ -38,4 +38,3 @@ CREATE TABLE indexing_data (
 );
 
 CREATE INDEX idx_indexing_data ON indexing_data (namespace_id, key_id, value);
-
