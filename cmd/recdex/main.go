@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -164,101 +165,116 @@ func (d *DB) InsertRecords(records []*flatten.Record) error {
 		return err
 	}
 
-	insertRecordsStmt, err := tx.Prepare(`
-		INSERT INTO records (
-			record_namespace,
-			record_id,
-			record_timestamp,
-			record_hash,
-			record_data
-		) VALUES ($1, $2, $3, $4, $5)
-	`)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer insertRecordsStmt.Close()
+	keyIDs := map[string]int{}
 
-	insertIndexStmt, err := tx.Prepare(`
-		INSERT INTO indexing_data (
-			namespace_id,
-			key_id,
-			record_id,
-			value
-		) VALUES ($1, $2, $3, $4)
-	`)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer insertIndexStmt.Close()
-
-	var numRecords, numIndexEntries int
-
-	numTotalRecords := len(records)
-
-	for recordNo, record := range records {
-		_, err = tx.Exec("SAVEPOINT before_insert")
-		if err != nil {
-			return err
-		}
-
-		_, err := insertRecordsStmt.Exec(nsid, record.RecordID, record.Timestamp, record.Hash, record.CanonicalJSON)
-
-		if pqErr, ok := err.(*pq.Error); ok {
-			if pqErr.Code == "23505" {
-				log.Printf("Skipping duplicate record %d of %d violated constraint %s", recordNo+1, numTotalRecords, pqErr.Constraint)
-
-				_, rollbackErr := tx.Exec("ROLLBACK TO SAVEPOINT before_insert")
-				if rollbackErr != nil {
-					return err
-				}
-
-				continue
-			} else {
-				tx.Rollback()
-				return err
-			}
-		} else if err != nil {
-			tx.Rollback()
-			return err
-		}
-		numRecords++
-
-		duration := time.Since(t0)
-		log.Printf("Inserted record %d of %d after %v", recordNo+1, numTotalRecords, duration)
-
+	for _, record := range records {
 		for _, k := range record.Fields {
 			keyID, err := d.GetKey(tx, nsid, k)
 			if err != nil {
 				tx.Rollback()
 				return err
 			}
+			keyIDs[k] = keyID
+		}
+	}
+
+	log.Printf("ready with %v field names at %v", len(keyIDs), time.Since(t0))
+
+	copyRecordsStmt, err := tx.Prepare(pq.CopyIn("records", "record_namespace", "record_id", "record_timestamp", "record_hash", "record_data"))
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("error preparing copy records: %w", err)
+	}
+
+	numTotalRecords := len(records)
+
+	for recordNo, record := range records {
+		_, err := copyRecordsStmt.Exec(nsid, record.RecordID, record.Timestamp, record.Hash, record.CanonicalJSON)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("error copying record: %w", err)
+		}
+
+		duration := time.Since(t0)
+		log.Printf("Inserted record %d of %d after %v", recordNo+1, numTotalRecords, duration)
+	}
+
+	if _, err := copyRecordsStmt.Exec(); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	copyIndexStmt, err := tx.Prepare(pq.CopyIn("indexing_data", "namespace_id", "key_id", "record_id", "value"))
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("error preparing copy index: %w", err)
+	}
+
+	var numRecords, numIndexEntries int
+
+	for recordNo, record := range records {
+		/*
+			if pqErr, ok := err.(*pq.Error); ok {
+				if pqErr.Code == "23505" {
+					log.Printf("Skipping duplicate record %d of %d violated constraint %s", recordNo+1, numTotalRecords, pqErr.Constraint)
+
+					_, rollbackErr := tx.Exec("ROLLBACK TO SAVEPOINT before_insert")
+					if rollbackErr != nil {
+						return err
+					}
+
+					continue
+				} else {
+					tx.Rollback()
+					return err
+				}
+			} else if err != nil {
+				tx.Rollback()
+				return err
+			}
+		*/
+		numRecords++
+
+		duration := time.Since(t0)
+		log.Printf("Inserted index for record %d of %d after %v", recordNo+1, numTotalRecords, duration)
+
+		for _, k := range record.Fields {
+			keyID, ok := keyIDs[k]
+			if !ok {
+				tx.Rollback()
+				return errors.New("key not found in keyIDs map; internal error")
+			}
 
 			values, hasValue := record.FieldValues[k]
 			if !hasValue {
 				numIndexEntries++
-				if _, err := insertIndexStmt.Exec(nsid, keyID, record.RecordID, nil); err != nil {
+
+				if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordID, nil); err != nil {
 					tx.Rollback()
-					return err
+					return fmt.Errorf("error copying index entry: %w", err)
 				}
 			} else {
 				for _, value := range values {
 					numIndexEntries++
-					if _, err := insertIndexStmt.Exec(nsid, keyID, record.RecordID, value); err != nil {
+					if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordID, value); err != nil {
 						tx.Rollback()
-						return err
+						return fmt.Errorf("error copying index entry: %w", err)
 					}
 				}
 			}
 		}
 	}
 
+	if _, err := copyIndexStmt.Exec(); err != nil {
+		tx.Rollback()
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		log.Fatal(err)
 	}
 
-	log.Printf("Inserted %d records and %d index entries", numRecords, numIndexEntries)
+	log.Printf("Inserted %d records and %d index entries after %v", numRecords, numIndexEntries, time.Since(t0))
 
 	return nil
 }
