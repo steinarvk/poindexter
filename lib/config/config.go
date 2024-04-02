@@ -15,11 +15,40 @@ type Config struct {
 	Clients    map[string]Client `yaml:"clients"`
 }
 
+func (c *Config) setDefaults() error {
+	if err := c.Limits.setDefaults(); err != nil {
+		return fmt.Errorf("error setting defaults for limits: %w", err)
+	}
+
+	return nil
+}
+
 type Limits struct {
 	MaxBytesPerRecord           int `yaml:"max_bytes_per_record"`
 	ExplorationObjectFieldLimit int `yaml:"exploration_object_field_limit"`
 	ExplorationArrayEntryLimit  int `yaml:"exploration_array_entry_limit"`
+	CapturedValueLengthLimit    int `yaml:"captured_value_length_limit"`
 	TotalKeyLimit               int `yaml:"total_key_limit"`
+}
+
+func (l *Limits) setDefaults() error {
+	if l.MaxBytesPerRecord == 0 {
+		l.MaxBytesPerRecord = 1024 * 1024
+	}
+	if l.ExplorationObjectFieldLimit == 0 {
+		l.ExplorationObjectFieldLimit = 1000
+	}
+	if l.ExplorationArrayEntryLimit == 0 {
+		l.ExplorationArrayEntryLimit = 1000
+	}
+	if l.CapturedValueLengthLimit == 0 {
+		l.CapturedValueLengthLimit = 1024
+	}
+	if l.TotalKeyLimit == 0 {
+		l.TotalKeyLimit = 1000
+	}
+
+	return nil
 }
 
 type Client struct {
@@ -84,6 +113,10 @@ func Load(filenameOrData string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	if err := config.setDefaults(); err != nil {
+		return nil, fmt.Errorf("error setting defaults: %w", err)
 	}
 
 	if err := config.Validate(); err != nil {

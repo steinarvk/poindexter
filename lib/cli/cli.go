@@ -1,13 +1,45 @@
 package cli
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"log"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steinarvk/recdex/lib/config"
+	"github.com/steinarvk/recdex/lib/recdexdb"
 	"github.com/steinarvk/recdex/lib/server"
 )
+
+func readLinesFromFile(filename string, maxLineLength int) ([]string, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+
+	log.Printf("scanning %q with max line length %d", filename, maxLineLength)
+
+	// Handle longer lines
+	buf := make([]byte, maxLineLength)
+	scanner.Buffer(buf, maxLineLength)
+
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return lines, nil
+}
 
 var (
 	errNotImplemented = fmt.Errorf("not implemented")
@@ -113,11 +145,145 @@ func Main() {
 		},
 	}
 
-	var flattenCmd = &cobra.Command{
-		Use:   "flatten",
-		Short: "Flatten a JSON file",
+	var statsCmd = &cobra.Command{
+		Use:   "stats",
+		Short: "Get statistics on database using direct database access",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
+			postgresCreds := recdexdb.PostgresConfig{
+				PostgresHost: os.Getenv("PGHOST"),
+				PostgresUser: os.Getenv("PGUSER"),
+				PostgresDB:   os.Getenv("PGDATABASE"),
+				PostgresPass: os.Getenv("PGPASSWORD"),
+			}
+			params := recdexdb.Params{
+				Postgres:  postgresCreds,
+				Verbosity: 0,
+			}
+
+			configValue := os.Getenv("RECDEX_CONFIG")
+			if configValue == "" {
+				return fmt.Errorf("RECDEX_CONFIG environment variable not set")
+			}
+
+			cfg, err := config.Load(configValue)
+			if err != nil {
+				return err
+			}
+
+			db, err := recdexdb.Open(params, *cfg)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			stats, err := db.GetStats()
+			if err != nil {
+				return err
+			}
+
+			fmt.Println("NumRecords:", stats.NumRecords)
+			fmt.Println("NumIndexingKeys:", stats.NumIndexingKeys)
+			fmt.Println("NumIndexingRows:", stats.NumIndexingRows)
+			fmt.Println("TotalStorageBytes:", stats.TotalSizeAllRelations)
+			fmt.Println("TotalIndexBytes:", stats.TotalSizeAllIndexes)
+			fmt.Println("TotalRecordBytes:", stats.TotalLengthAllRecords)
+			fmt.Println("MaxRecordLength:", stats.MaxRecordLength)
+			fmt.Println()
+			fmt.Println("Average record length:", float64(stats.TotalLengthAllRecords)/float64(stats.NumRecords))
+			fmt.Println("Average record storage size:", float64(stats.TotalSizeAllRelations)/float64(stats.NumRecords))
+			fmt.Println("Expansion factor:", float64(stats.TotalSizeAllRelations)/float64(stats.TotalLengthAllRecords))
+			fmt.Println("Average indexing rows per record:", float64(stats.NumIndexingRows)/float64(stats.NumRecords))
+			fmt.Println()
+
+			for tableName, tableStats := range stats.TableStats {
+				fmt.Println("Table:", tableName)
+				fmt.Println("  pg_relation_size (bytes):", tableStats.PgRelationSize)
+				fmt.Println("  pg_indexes_size (bytes):", tableStats.PgIndexesSize)
+				fmt.Println("  pg_total_relation_size (bytes):", tableStats.PgTotalRelationSize)
+				fmt.Println("  n_live_tup (approximate rows):", tableStats.NLiveTuples)
+				fmt.Println("  n_dead_tup (approximate rows):", tableStats.NDeadTuples)
+			}
+
+			return nil
+		},
+	}
+
+	var syncSingleFileCmd = &cobra.Command{
+		Use:   "syncfile",
+		Short: "Flatten and upload one or more files using direct database access",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			postgresCreds := recdexdb.PostgresConfig{
+				PostgresHost: os.Getenv("PGHOST"),
+				PostgresUser: os.Getenv("PGUSER"),
+				PostgresDB:   os.Getenv("PGDATABASE"),
+				PostgresPass: os.Getenv("PGPASSWORD"),
+			}
+			params := recdexdb.Params{
+				Postgres:  postgresCreds,
+				Verbosity: 9,
+			}
+
+			namespaceName := "main"
+
+			configValue := os.Getenv("RECDEX_CONFIG")
+			if configValue == "" {
+				return fmt.Errorf("RECDEX_CONFIG environment variable not set")
+			}
+
+			cfg, err := config.Load(configValue)
+			if err != nil {
+				return err
+			}
+
+			db, err := recdexdb.Open(params, *cfg)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			ctx := context.Background()
+
+			maxLineLength := cfg.Limits.MaxBytesPerRecord + 1
+
+			t00 := time.Now()
+			var totalProcessed int64
+			var totalInserted int64
+			var totalError int64
+
+			for i, filename := range args {
+				t0 := time.Now()
+
+				lines, err := readLinesFromFile(filename, maxLineLength)
+				if err != nil {
+					return fmt.Errorf("error reading files from %q: %w", filename, err)
+				}
+
+				if i > 0 {
+					totalTimeSoFar := time.Since(t00)
+					processingRateSoFar := float64(totalProcessed) / totalTimeSoFar.Seconds()
+					estimatedTimeToProcessFile := float64(len(lines)) / processingRateSoFar
+					log.Printf("processing rate so far: %.2f/sec estimated time to process file %q of %d lines: %.2fs", processingRateSoFar, filename, len(lines), estimatedTimeToProcessFile)
+				}
+
+				result, err := db.InsertFlattenedRecords(ctx, namespaceName, lines)
+				if err != nil {
+					return fmt.Errorf("error inserting records from %q: %w", filename, err)
+				}
+
+				duration := time.Since(t0)
+				summary := result.Summary
+
+				log.Printf("processed %d entries from %q in %s: %+v", len(lines), filename, duration, summary)
+				totalProcessed += int64(len(lines))
+				totalInserted += int64(summary.NumInserted)
+				totalError += int64(summary.NumError)
+			}
+
+			totalDuration := time.Since(t00)
+			processingRate := float64(totalProcessed) / totalDuration.Seconds()
+			log.Printf("processed %d entries in %s: %d inserted, %d errors, %.2f/s", totalProcessed, totalDuration, totalInserted, totalError, processingRate)
+
+			return nil
 		},
 	}
 
@@ -133,8 +299,8 @@ func Main() {
 	configCmd.AddCommand(serverCmd, directoryCmd)
 	syncCmd.AddCommand(watchCmd)
 	serverCmd.AddCommand(createServerCmd, addClientCmd, grantAccessCmd)
-	adminCmd.AddCommand(listClients)
-	scratchCmd.AddCommand(flattenCmd)
+	adminCmd.AddCommand(listClients, statsCmd)
+	scratchCmd.AddCommand(syncSingleFileCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

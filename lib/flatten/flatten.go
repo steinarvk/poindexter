@@ -15,6 +15,11 @@ import (
 	"github.com/google/uuid"
 )
 
+var (
+	errRecordHasNoID        = errors.New("record has no ID")
+	errRecordHasNoTimestamp = errors.New("record has no timestamp")
+)
+
 var validIDFieldNames = []string{
 	"record_id",
 	"record_uuid",
@@ -51,6 +56,8 @@ type Flattener struct {
 	MaxExploredObjectElements int
 	MaxTotalFields            int
 	MaxCapturedValueLength    int
+	AcceptMissingID           bool
+	AcceptMissingTimestamp    bool
 }
 
 type Record struct {
@@ -336,6 +343,9 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 		}
 		recordUUID = parsed
 	} else {
+		if !f.AcceptMissingID {
+			return nil, errRecordHasNoID
+		}
 		recordUUID = uuid.New()
 	}
 
@@ -355,6 +365,9 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 		}
 		recordTimestamp = t
 	} else {
+		if !f.AcceptMissingTimestamp {
+			return nil, errRecordHasNoTimestamp
+		}
 		recordTimestamp = time.Now()
 	}
 
