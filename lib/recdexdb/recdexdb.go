@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
-	_ "github.com/lib/pq"
 	"github.com/steinarvk/recdex/lib/config"
 	"github.com/steinarvk/recdex/lib/flatten"
 )
@@ -59,10 +58,11 @@ type BatchInsertionResult struct {
 }
 
 type nonsensitiveOptions struct {
-	batchSize        int
-	insertionWorkers int
-	flattenWorkers   int
-	verbosity        int
+	batchSize          int
+	insertionWorkers   int
+	flattenWorkers     int
+	verbosity          int
+	disableAutoMigrate bool
 }
 
 type dbOptions struct {
@@ -119,11 +119,6 @@ type DB struct {
 	db      *sql.DB
 	caches  *caches
 	options dbOptions
-}
-
-func (d *DB) runMigrations() error {
-	// TODO auto-run migrations
-	return nil
 }
 
 type errNoSuchNamespace struct {
@@ -377,6 +372,12 @@ func (d *DB) insertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, 
 }
 
 func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, recordEntries []indexedFlattenedEntry) ([]InsertionResult, error) {
+	// TODO: must maintain constraints:
+	//   - any record can be superseded at most once.
+
+	// Note that we cannot require that the superseded record exists,
+	// because batches can be arbitrarily reordered.
+	// This should be required in the single-item insertion function.
 
 	var results []InsertionResult
 
@@ -462,7 +463,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		return results, nil
 	}
 
-	copyRecordsStmt, err := tx.Prepare(pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data"))
+	copyRecordsStmt, err := tx.Prepare(pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id"))
 	if err != nil {
 		return nil, fmt.Errorf("error preparing copy records: %w", err)
 	}
@@ -488,7 +489,16 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 			Inserted:   true,
 		})
 
-		_, err := copyRecordsStmt.Exec(nsid, record.RecordUUID, record.Timestamp, record.Hash, record.CanonicalJSON)
+		_, err := copyRecordsStmt.Exec(
+			nsid,
+			record.RecordUUID,
+			record.Timestamp,
+			record.Hash,
+			record.CanonicalJSON,
+			record.ShapeHash,
+			record.LockedUntil,
+			record.SupersedesUUID,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("error copying record: %w", err)
 		}
@@ -607,12 +617,14 @@ func Open(params Params, sensitiveConfig config.Config) (*DB, error) {
 		options: opts,
 	}
 
-	if params.Verbosity > 1 {
-		log.Printf("running migrations")
-	}
+	if !opts.nonsensitiveOptions.disableAutoMigrate {
+		if params.Verbosity > 1 {
+			log.Printf("running migrations")
+		}
 
-	if err := db.runMigrations(); err != nil {
-		return nil, err
+		if err := db.runMigrations(); err != nil {
+			return nil, err
+		}
 	}
 
 	if params.Verbosity > 1 {
@@ -634,17 +646,21 @@ func (d *DB) Close() error {
 	return d.db.Close()
 }
 
-func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputCh <-chan indexedSerializedEntry, outCh chan<- InsertionResult) error {
-	flattenedCh := make(chan indexedFlattenedEntry, 100)
-
+func (d *DB) makeFlattener() flatten.Flattener {
 	limits := d.options.getLimits()
 
-	flattener := flatten.Flattener{
+	return flatten.Flattener{
 		MaxSerializedLength:       limits.MaxBytesPerRecord,
 		MaxExploredObjectElements: limits.ExplorationObjectFieldLimit,
 		MaxTotalFields:            limits.TotalKeyLimit,
 		MaxCapturedValueLength:    limits.CapturedValueLengthLimit,
 	}
+}
+
+func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputCh <-chan indexedSerializedEntry, outCh chan<- InsertionResult) error {
+	flattenedCh := make(chan indexedFlattenedEntry, 100)
+
+	flattener := d.makeFlattener()
 
 	flattenSerializedWorker := func(ctx context.Context, workerno int) error {
 		if d.options.isVerbose(10) {
@@ -980,6 +996,47 @@ func (d *DB) getTableStats() (map[string]TableStats, error) {
 	}
 
 	return tableStats, nil
+}
+
+func (d *DB) InsertObject(ctx context.Context, namespaceName string, value interface{}) (*uuid.UUID, error) {
+	// TODO additionally check whether "superseded" actually exists.
+
+	flattener := d.makeFlattener()
+
+	nsid, err := d.getNamespaceID(namespaceName)
+	if err != nil {
+		return nil, err
+	}
+
+	flat, err := flattener.FlattenObject(value)
+	if err != nil {
+		return nil, err
+	}
+
+	singletonBatch := []indexedFlattenedEntry{
+		{
+			index:  0,
+			record: flat,
+		},
+	}
+
+	results, err := d.insertFlattenedRecordsInBatch(ctx, nsid, singletonBatch)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) != 1 {
+		return nil, errors.New("internal error: expected exactly one result")
+	}
+
+	result := results[0]
+	if !result.Ok {
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		return nil, errors.New("internal error: unexpected result")
+	}
+
+	return &result.RecordUUID, nil
 }
 
 func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, lines []string) (*BatchInsertionResult, error) {

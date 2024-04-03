@@ -8,13 +8,20 @@ CREATE TABLE records (
     namespace_id INTEGER NOT NULL,
     record_timestamp TIMESTAMP WITH TIME ZONE,
     record_hash TEXT NOT NULL,
+    record_shape_hash TEXT NOT NULL,
     record_data TEXT,
+    record_locked_until TIMESTAMP WITH TIME ZONE NULL,
+    record_supersedes_id UUID NULL,
     CONSTRAINT fk_namespace FOREIGN KEY (namespace_id) REFERENCES namespaces (namespace_id) DEFERRABLE INITIALLY IMMEDIATE,
     CONSTRAINT uniq_namespace_hash UNIQUE (namespace_id, record_hash)
 );
 
 CREATE INDEX idx_namespace_id_uuid ON records (namespace_id, record_id);
 CREATE INDEX idx_namespace_id_timestamp ON records (namespace_id, record_timestamp);
+CREATE INDEX idx_namespace_id_shape_hash ON records (namespace_id, record_shape_hash);
+CREATE INDEX idx_namespace_id_record_supersedes_id
+    ON records (namespace_id, record_supersedes_id)
+    WHERE record_supersedes_id IS NOT NULL;
 
 CREATE TABLE indexing_keys (
     key_id SERIAL PRIMARY KEY,

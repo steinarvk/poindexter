@@ -20,6 +20,22 @@ var (
 	errRecordHasNoTimestamp = errors.New("record has no timestamp")
 )
 
+var (
+	noExploreFieldName = "_noindex"
+)
+
+type falseFriend struct {
+	badFieldName    string
+	actualFieldName string
+}
+
+var falseFriends = []falseFriend{
+	{"supersedes_uuid", "supersedes_id"},
+	{"supersedes", "supersedes_id"},
+	{"locked_until_time", "locked_until"},
+	{"locked_until_timestamp", "locked_until"},
+}
+
 var validIDFieldNames = []string{
 	"record_id",
 	"record_uuid",
@@ -37,6 +53,9 @@ var validTimestampFieldNames = []string{
 	"event_time",
 	"time",
 }
+
+var supersedesFieldName string = "supersedes_id"
+var lockedUntilFieldName string = "locked_until"
 
 type PathElementKind int
 
@@ -58,6 +77,7 @@ type Flattener struct {
 	MaxCapturedValueLength    int
 	AcceptMissingID           bool
 	AcceptMissingTimestamp    bool
+	IgnoreNoIndex             bool
 }
 
 type Record struct {
@@ -67,6 +87,10 @@ type Record struct {
 	FieldValues   map[string][][]byte
 	Fields        []string
 	CanonicalJSON string
+	ShapeHash     string
+
+	SupersedesUUID *uuid.UUID
+	LockedUntil    *time.Time
 }
 
 func interpretFloatAsTimestamp(value float64) (time.Time, error) {
@@ -249,6 +273,15 @@ func (b canonicalizationError) Error() string {
 	return fmt.Sprintf("serialized record could not be canonicalized: %s", b.err)
 }
 
+func hashSortedFieldNames(fieldNames []string) string {
+	h := sha256.New()
+	for _, x := range fieldNames {
+		h.Write([]byte(x))
+		h.Write([]byte{'\n'})
+	}
+	return hexlify(h.Sum(nil))
+}
+
 func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 	line := strings.TrimSpace(string(recordData))
 
@@ -265,6 +298,10 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 		return nil, badJSONError{err}
 	}
 
+	return f.FlattenObject(unmarshalled)
+}
+
+func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 	canonicalForm, err := canonicaljson.Marshal(unmarshalled)
 	if err != nil {
 		return nil, canonicalizationError{err}
@@ -277,6 +314,12 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 	unmarshalledObj, ok := unmarshalled.(map[string]interface{})
 	if !ok {
 		return nil, errNotObject
+	}
+
+	for _, ff := range falseFriends {
+		if _, ok := unmarshalledObj[ff.badFieldName]; ok {
+			return nil, fmt.Errorf("forbidden top-level field %q (the intent was probably %q)", ff.badFieldName, ff.actualFieldName)
+		}
 	}
 
 	recordHash := hashData(canonicalForm)
@@ -297,6 +340,20 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 
 		switch value := value.(type) {
 		case map[string]interface{}:
+			if f.IgnoreNoIndex {
+				if noIndexValue, ok := value[noExploreFieldName]; ok {
+					noIndexBool, ok := noIndexValue.(bool)
+					if ok && noIndexBool {
+						newKey := key + "." + noExploreFieldName
+						fieldsPresent[newKey] = true
+						fieldValues[newKey] = [][]byte{
+							[]byte("true"),
+						}
+						return false, nil
+					}
+				}
+			}
+
 			if len(value) > f.MaxExploredObjectElements {
 				return false, nil
 			}
@@ -371,18 +428,42 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 		recordTimestamp = time.Now()
 	}
 
+	var supersedesUUID *uuid.UUID
+
+	if supersedesIDString, ok := unmarshalledObj[supersedesFieldName].(string); ok {
+		parsed, err := uuid.Parse(supersedesIDString)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %q in record (value was %q), %w", supersedesFieldName, supersedesIDString, err)
+		}
+		supersedesUUID = &parsed
+	}
+
+	var lockedUntil *time.Time
+	if lockedUntilString, ok := unmarshalledObj[lockedUntilFieldName].(string); ok {
+		t, err := interpretTimestamp(lockedUntilString)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %q in record (value was %q), %w", lockedUntilFieldName, lockedUntilString, err)
+		}
+		lockedUntil = &t
+	}
+
 	var fieldNames []string
 	for k := range fieldsPresent {
 		fieldNames = append(fieldNames, k)
 	}
 	sort.Strings(fieldNames)
 
+	recordShape := hashSortedFieldNames(fieldNames)
+
 	return &Record{
-		RecordUUID:    recordUUID,
-		Timestamp:     recordTimestamp,
-		Hash:          hexlify(recordHash),
-		FieldValues:   fieldValues,
-		Fields:        fieldNames,
-		CanonicalJSON: string(canonicalForm),
+		RecordUUID:     recordUUID,
+		Timestamp:      recordTimestamp,
+		Hash:           hexlify(recordHash),
+		FieldValues:    fieldValues,
+		Fields:         fieldNames,
+		CanonicalJSON:  string(canonicalForm),
+		SupersedesUUID: supersedesUUID,
+		LockedUntil:    lockedUntil,
+		ShapeHash:      recordShape,
 	}, nil
 }

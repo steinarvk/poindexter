@@ -2,14 +2,21 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/steinarvk/recdex/lib/config"
+	"github.com/steinarvk/recdex/lib/recdexdb"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	"github.com/honeycombio/honeycomb-opentelemetry-go"
+	"github.com/honeycombio/otel-config-go/otelconfig"
 )
 
 // Option is the type for functional options that can return an error
@@ -20,6 +27,7 @@ type Server struct {
 	host   string
 	port   int
 	config config.Config
+	db     *recdexdb.DB
 }
 
 // NewServer creates a new server with default values and applies given options
@@ -28,7 +36,6 @@ func New(options ...Option) (*Server, error) {
 		host: "127.0.0.1",
 		port: 5244,
 	}
-
 	for _, option := range options {
 		err := option(s)
 		if err != nil {
@@ -36,7 +43,29 @@ func New(options ...Option) (*Server, error) {
 		}
 	}
 
+	postgresCreds := recdexdb.PostgresConfig{
+		PostgresHost: os.Getenv("PGHOST"),
+		PostgresUser: os.Getenv("PGUSER"),
+		PostgresDB:   os.Getenv("PGDATABASE"),
+		PostgresPass: os.Getenv("PGPASSWORD"),
+	}
+	params := recdexdb.Params{
+		Postgres:  postgresCreds,
+		Verbosity: 0,
+	}
+
+	db, err := recdexdb.Open(params, s.config)
+	if err != nil {
+		return nil, err
+	}
+
+	s.db = db
+
 	return s, nil
+}
+
+func (s *Server) Close() error {
+	return s.db.Close()
 }
 
 func WithConfig(cfg config.Config) Option {
@@ -79,11 +108,15 @@ type apiHandlerFunc func(namespace string, w http.ResponseWriter, r *http.Reques
 func (s *Server) Run() error {
 	mux := http.NewServeMux()
 	mux.Handle("/api/read/", s.middleware(readApiHandler{s.fooHandler}))
-	mux.Handle("/api/write/", s.middleware(writeApiHandler{s.barHandler}))
+
+	mux.Handle("/api/write/record/", s.middleware(writeApiHandler{s.writeSingleRecordHandler}))
+
+	var wrappedHandler http.Handler = mux
+	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "recdex-server")
 
 	address := fmt.Sprintf("%s:%d", s.host, s.port)
 	fmt.Printf("Server is running on %s\n", address)
-	return http.ListenAndServe(address, mux)
+	return http.ListenAndServe(address, wrappedHandler)
 }
 
 type VerifyingApiHandler interface {
@@ -176,8 +209,21 @@ func (s *Server) fooHandler(namespace string, w http.ResponseWriter, r *http.Req
 	return json.NewEncoder(w).Encode(response)
 }
 
-func (s *Server) barHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
-	response := map[string]string{"message": "bar called", "namespace": namespace}
+func (s *Server) writeSingleRecordHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := context.TODO()
+
+	var req interface{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return err
+	}
+
+	newUUID, err := s.db.InsertObject(ctx, namespace, req)
+	if err != nil {
+		return err
+	}
+
+	response := map[string]string{"namespace": namespace, "uuid": newUUID.String()}
+
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(response)
 }
@@ -187,4 +233,33 @@ func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func Main() error {
+	configValue := os.Getenv("RECDEX_CONFIG")
+	if configValue == "" {
+		return fmt.Errorf("RECDEX_CONFIG environment variable not set")
+	}
+
+	cfg, err := config.Load(configValue)
+	if err != nil {
+		return err
+	}
+
+	bsp := honeycomb.NewBaggageSpanProcessor()
+
+	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
+		otelconfig.WithSpanProcessor(bsp),
+	)
+	if err != nil {
+		return fmt.Errorf("error setting up OTel SDK: %w", err)
+	}
+	defer otelShutdown()
+
+	serv, err := New(WithConfig(*cfg))
+	if err != nil {
+		return err
+	}
+
+	return serv.Run()
 }
