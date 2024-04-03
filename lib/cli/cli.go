@@ -155,13 +155,15 @@ func Main() {
 				return err
 			}
 
-			db, err := recdexdb.Open(params, *cfg)
+			ctx := context.Background()
+
+			db, err := recdexdb.Open(ctx, params, *cfg)
 			if err != nil {
 				return err
 			}
 			defer db.Close()
 
-			stats, err := db.GetStats()
+			stats, err := db.GetStats(ctx)
 			if err != nil {
 				return err
 			}
@@ -215,18 +217,18 @@ func Main() {
 				return fmt.Errorf("RECDEX_CONFIG environment variable not set")
 			}
 
+			ctx := context.Background()
+
 			cfg, err := config.Load(configValue)
 			if err != nil {
 				return err
 			}
 
-			db, err := recdexdb.Open(params, *cfg)
+			db, err := recdexdb.Open(ctx, params, *cfg)
 			if err != nil {
 				return err
 			}
 			defer db.Close()
-
-			ctx := context.Background()
 
 			maxLineLength := cfg.Limits.MaxBytesPerRecord + 1
 
@@ -247,7 +249,7 @@ func Main() {
 					totalTimeSoFar := time.Since(t00)
 					processingRateSoFar := float64(totalProcessed) / totalTimeSoFar.Seconds()
 					estimatedTimeToProcessFile := float64(len(lines)) / processingRateSoFar
-					log.Printf("processing rate so far: %.2f/sec estimated time to process file %q of %d lines: %.2fs", processingRateSoFar, filename, len(lines), estimatedTimeToProcessFile)
+					log.Printf("processing rate so far: %.2f/sec estimated time to process file %q: %.2fs", processingRateSoFar, filename, estimatedTimeToProcessFile)
 				}
 
 				result, err := db.InsertFlattenedRecords(ctx, namespaceName, lines)

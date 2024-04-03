@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/XSAM/otelsql"
 	"github.com/steinarvk/recdex/lib/config"
 	"github.com/steinarvk/recdex/lib/recdexdb"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -43,6 +44,11 @@ func New(options ...Option) (*Server, error) {
 		}
 	}
 
+	driverName, err := otelsql.Register("postgres")
+	if err != nil {
+		return nil, err
+	}
+
 	postgresCreds := recdexdb.PostgresConfig{
 		PostgresHost: os.Getenv("PGHOST"),
 		PostgresUser: os.Getenv("PGUSER"),
@@ -50,11 +56,14 @@ func New(options ...Option) (*Server, error) {
 		PostgresPass: os.Getenv("PGPASSWORD"),
 	}
 	params := recdexdb.Params{
-		Postgres:  postgresCreds,
-		Verbosity: 0,
+		Postgres:      postgresCreds,
+		SQLDriverName: driverName,
+		Verbosity:     0,
 	}
 
-	db, err := recdexdb.Open(params, s.config)
+	ctx := context.Background()
+
+	db, err := recdexdb.Open(ctx, params, s.config)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +219,7 @@ func (s *Server) fooHandler(namespace string, w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) writeSingleRecordHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
-	ctx := context.TODO()
+	ctx := r.Context()
 
 	var req interface{}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -249,6 +258,7 @@ func Main() error {
 	bsp := honeycomb.NewBaggageSpanProcessor()
 
 	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
+		otelconfig.WithServiceName("recdex-server"),
 		otelconfig.WithSpanProcessor(bsp),
 	)
 	if err != nil {

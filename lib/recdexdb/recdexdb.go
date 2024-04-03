@@ -142,7 +142,7 @@ func (d *DB) getNamespaceID(namespaceName string) (Namespace, error) {
 	return Namespace(nsid), nil
 }
 
-func (d *DB) prepopulateNamespaceCache() error {
+func (d *DB) prepopulateNamespaceCache(ctx context.Context) error {
 	d.caches.mu.Lock()
 	defer d.caches.mu.Unlock()
 
@@ -152,7 +152,7 @@ func (d *DB) prepopulateNamespaceCache() error {
 
 	configuredNamespaces := d.options.getConfiguredNamespaces()
 
-	tx, err := d.db.Begin()
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (d *DB) prepopulateNamespaceCache() error {
 
 	loadNamespaces := func(namespaceNames []string) error {
 		// Load IDs for all configured namespaces.
-		rows, err := tx.Query("SELECT namespace_id, namespace_name FROM namespaces WHERE namespace_name = ANY($1)", pq.Array(namespaceNames))
+		rows, err := tx.QueryContext(ctx, "SELECT namespace_id, namespace_name FROM namespaces WHERE namespace_name = ANY($1)", pq.Array(namespaceNames))
 		if err != nil {
 			return err
 		}
@@ -187,19 +187,19 @@ func (d *DB) prepopulateNamespaceCache() error {
 	}
 
 	insertNewNamespaces := func(namespaceNames []string) error {
-		copyNamespacesStmt, err := tx.Prepare(pq.CopyIn("namespaces", "namespace_name"))
+		copyNamespacesStmt, err := tx.PrepareContext(ctx, pq.CopyIn("namespaces", "namespace_name"))
 		if err != nil {
 			return err
 		}
 
 		for _, ns := range namespaceNames {
-			_, err := copyNamespacesStmt.Exec(ns)
+			_, err := copyNamespacesStmt.ExecContext(ctx, ns)
 			if err != nil {
 				return err
 			}
 		}
 
-		if _, err := copyNamespacesStmt.Exec(); err != nil {
+		if _, err := copyNamespacesStmt.ExecContext(ctx); err != nil {
 			return err
 		}
 
@@ -249,7 +249,7 @@ func (d *DB) prepopulateNamespaceCache() error {
 	return nil
 }
 
-func (d *DB) getKeys(tx *sql.Tx, namespaceID Namespace, keysRequired map[string]struct{}) (map[string]IndexKey, error) {
+func (d *DB) getKeys(ctx context.Context, tx *sql.Tx, namespaceID Namespace, keysRequired map[string]struct{}) (map[string]IndexKey, error) {
 	rv := map[string]IndexKey{}
 
 	d.caches.mu.Lock()
@@ -279,7 +279,7 @@ func (d *DB) getKeys(tx *sql.Tx, namespaceID Namespace, keysRequired map[string]
 			return nil
 		}
 
-		rows, err := tx.Query("SELECT key_id, key_name FROM indexing_keys WHERE namespace_id = $1 AND key_name = ANY($2)", namespaceID, pq.Array(keysToQuery))
+		rows, err := tx.QueryContext(ctx, "SELECT key_id, key_name FROM indexing_keys WHERE namespace_id = $1 AND key_name = ANY($2)", namespaceID, pq.Array(keysToQuery))
 		if err != nil {
 			return err
 		}
@@ -308,19 +308,19 @@ func (d *DB) getKeys(tx *sql.Tx, namespaceID Namespace, keysRequired map[string]
 	}
 
 	if len(remainingKeys) > 0 {
-		copyKeysStmt, err := tx.Prepare(pq.CopyIn("indexing_keys", "namespace_id", "key_name"))
+		copyKeysStmt, err := tx.PrepareContext(ctx, pq.CopyIn("indexing_keys", "namespace_id", "key_name"))
 		if err != nil {
 			return nil, err
 		}
 
 		for keyName := range remainingKeys {
-			_, err := copyKeysStmt.Exec(namespaceID, keyName)
+			_, err := copyKeysStmt.ExecContext(ctx, namespaceID, keyName)
 			if err != nil {
 				return nil, err
 			}
 		}
 
-		if _, err := copyKeysStmt.Exec(); err != nil {
+		if _, err := copyKeysStmt.ExecContext(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -381,7 +381,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 
 	var results []InsertionResult
 
-	tx, err := d.db.Begin()
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +393,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		}
 	}()
 
-	if _, err := tx.Exec("SET CONSTRAINTS ALL DEFERRED"); err != nil {
+	if _, err := tx.ExecContext(ctx, "SET CONSTRAINTS ALL DEFERRED"); err != nil {
 		return nil, err
 	}
 
@@ -418,7 +418,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		}
 	}
 
-	keyIDs, err := d.getKeys(tx, nsid, keysRequiredMap)
+	keyIDs, err := d.getKeys(ctx, tx, nsid, keysRequiredMap)
 	if err != nil {
 		return nil, fmt.Errorf("error getting keys: %w", err)
 	}
@@ -428,14 +428,14 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 	}
 	tx = nil
 
-	newTx, err := d.db.Begin()
+	newTx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error starting new transaction: %w", err)
 	}
 	tx = newTx
 
 	// Check for duplicates, to omit them from the batch insert.
-	rows, err := tx.Query("SELECT record_id FROM records WHERE namespace_id = $1 AND (record_id = ANY($2) OR record_hash = ANY($3))", nsid, pq.Array(allRecordIDs), pq.Array(allRecordHashes))
+	rows, err := tx.QueryContext(ctx, "SELECT record_id FROM records WHERE namespace_id = $1 AND (record_id = ANY($2) OR record_hash = ANY($3))", nsid, pq.Array(allRecordIDs), pq.Array(allRecordHashes))
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +463,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		return results, nil
 	}
 
-	copyRecordsStmt, err := tx.Prepare(pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id"))
+	copyRecordsStmt, err := tx.PrepareContext(ctx, pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id"))
 	if err != nil {
 		return nil, fmt.Errorf("error preparing copy records: %w", err)
 	}
@@ -489,7 +489,8 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 			Inserted:   true,
 		})
 
-		_, err := copyRecordsStmt.Exec(
+		_, err := copyRecordsStmt.ExecContext(
+			ctx,
 			nsid,
 			record.RecordUUID,
 			record.Timestamp,
@@ -506,11 +507,11 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		numInsertedRecords++
 	}
 
-	if _, err := copyRecordsStmt.Exec(); err != nil {
+	if _, err := copyRecordsStmt.ExecContext(ctx); err != nil {
 		return nil, fmt.Errorf("error copying record (flush): %w", err)
 	}
 
-	copyIndexStmt, err := tx.Prepare(pq.CopyIn("indexing_data", "namespace_id", "key_id", "record_id", "value"))
+	copyIndexStmt, err := tx.PrepareContext(ctx, pq.CopyIn("indexing_data", "namespace_id", "key_id", "record_id", "value"))
 	if err != nil {
 		return nil, fmt.Errorf("error preparing copy index: %w", err)
 	}
@@ -533,13 +534,13 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 			if !hasValue {
 				numIndexEntriesInserted++
 
-				if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordUUID, nil); err != nil {
+				if _, err := copyIndexStmt.ExecContext(ctx, nsid, keyID, record.RecordUUID, nil); err != nil {
 					return nil, fmt.Errorf("error copying index entry: %w", err)
 				}
 			} else {
 				for _, value := range values {
 					numIndexEntriesInserted++
-					if _, err := copyIndexStmt.Exec(nsid, keyID, record.RecordUUID, string(value)); err != nil {
+					if _, err := copyIndexStmt.ExecContext(ctx, nsid, keyID, record.RecordUUID, string(value)); err != nil {
 						return nil, fmt.Errorf("error copying index entry: %w", err)
 					}
 				}
@@ -547,7 +548,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		}
 	}
 
-	if _, err := copyIndexStmt.Exec(); err != nil {
+	if _, err := copyIndexStmt.ExecContext(ctx); err != nil {
 		return nil, fmt.Errorf("error copying index (flush): %w", err)
 	}
 
@@ -576,17 +577,25 @@ func (p PostgresConfig) MakeConnectionString() (string, error) {
 }
 
 type Params struct {
-	Postgres  PostgresConfig
-	Verbosity int
+	Postgres      PostgresConfig
+	SQLDriverName string
+	Verbosity     int
 }
 
-func Open(params Params, sensitiveConfig config.Config) (*DB, error) {
+func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*DB, error) {
 	connStr, err := params.Postgres.MakeConnectionString()
 	if err != nil {
 		return nil, err
 	}
 
-	rawDB, err := sql.Open("postgres", connStr)
+	sqlDriverName := params.SQLDriverName
+	if sqlDriverName == "" {
+		sqlDriverName = "postgres"
+	}
+
+	log.Printf("using driver name: %q", sqlDriverName)
+
+	rawDB, err := sql.Open(sqlDriverName, connStr)
 	if err != nil {
 		return nil, err
 	}
@@ -631,7 +640,7 @@ func Open(params Params, sensitiveConfig config.Config) (*DB, error) {
 		log.Printf("prepopulating namespace cache")
 	}
 
-	if err := db.prepopulateNamespaceCache(); err != nil {
+	if err := db.prepopulateNamespaceCache(ctx); err != nil {
 		return nil, err
 	}
 
@@ -927,8 +936,8 @@ type Stats struct {
 	TotalSizeAllRelations int64
 }
 
-func (d *DB) GetStats() (*Stats, error) {
-	ts, err := d.getTableStats()
+func (d *DB) GetStats(ctx context.Context) (*Stats, error) {
+	ts, err := d.getTableStats(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -942,23 +951,23 @@ func (d *DB) GetStats() (*Stats, error) {
 		rv.TotalSizeAllIndexes += t.PgIndexesSize
 	}
 
-	if err := d.db.QueryRow("SELECT COUNT(*), SUM(LENGTH(record_data)), MAX(LENGTH(record_data)) FROM records").Scan(&rv.NumRecords, &rv.TotalLengthAllRecords, &rv.MaxRecordLength); err != nil {
+	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*), SUM(LENGTH(record_data)), MAX(LENGTH(record_data)) FROM records").Scan(&rv.NumRecords, &rv.TotalLengthAllRecords, &rv.MaxRecordLength); err != nil {
 		return nil, err
 	}
 
-	if err := d.db.QueryRow("SELECT COUNT(*) FROM indexing_keys").Scan(&rv.NumIndexingKeys); err != nil {
+	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM indexing_keys").Scan(&rv.NumIndexingKeys); err != nil {
 		return nil, err
 	}
 
-	if err := d.db.QueryRow("SELECT COUNT(*) FROM indexing_data").Scan(&rv.NumIndexingRows); err != nil {
+	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM indexing_data").Scan(&rv.NumIndexingRows); err != nil {
 		return nil, err
 	}
 
 	return &rv, nil
 }
 
-func (d *DB) getTableStats() (map[string]TableStats, error) {
-	rows, err := d.db.Query(`
+func (d *DB) getTableStats(ctx context.Context) (map[string]TableStats, error) {
+	rows, err := d.db.QueryContext(ctx, `
 	SELECT
 		tables.schemaname
 		, tables.relname
