@@ -17,8 +17,12 @@ import (
 	"github.com/steinarvk/recdex/lib/recdexdb"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/honeycombio/honeycomb-opentelemetry-go"
-	"github.com/honeycombio/otel-config-go/otelconfig"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 )
 
 // Option is the type for functional options that can return an error
@@ -277,7 +281,37 @@ func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+type CustomSpanExporter struct {
+	delegate trace.SpanExporter
+}
+
+func NewCustomSpanExporter(delegate trace.SpanExporter) *CustomSpanExporter {
+	return &CustomSpanExporter{delegate: delegate}
+}
+
+func (e *CustomSpanExporter) ExportSpans(ctx context.Context, spans []trace.ReadOnlySpan) error {
+	var filteredSpans []trace.ReadOnlySpan
+	for _, span := range spans {
+		duration := span.EndTime().Sub(span.StartTime())
+
+		if duration >= time.Millisecond {
+			filteredSpans = append(filteredSpans, span)
+		}
+	}
+
+	if len(filteredSpans) > 0 {
+		return e.delegate.ExportSpans(ctx, filteredSpans)
+	}
+	return nil
+}
+
+func (e *CustomSpanExporter) Shutdown(ctx context.Context) error {
+	return e.delegate.Shutdown(ctx)
+}
+
 func Main() error {
+	ctx := context.Background()
+
 	configValue := os.Getenv("RECDEX_CONFIG")
 	if configValue == "" {
 		return fmt.Errorf("RECDEX_CONFIG environment variable not set")
@@ -288,16 +322,28 @@ func Main() error {
 		return err
 	}
 
-	bsp := honeycomb.NewBaggageSpanProcessor()
-
-	otelShutdown, err := otelconfig.ConfigureOpenTelemetry(
-		otelconfig.WithServiceName("recdex-server"),
-		otelconfig.WithSpanProcessor(bsp),
-	)
+	exporter, err := otlptrace.New(ctx, otlptracehttp.NewClient())
 	if err != nil {
-		return fmt.Errorf("error setting up OTel SDK: %w", err)
+		log.Fatalf("Failed to create exporter: %v", err)
 	}
-	defer otelShutdown()
+
+	customExporter := NewCustomSpanExporter(exporter)
+
+	tp := trace.NewTracerProvider(
+		trace.WithBatcher(customExporter),
+		trace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String("recdex-server"),
+		)),
+	)
+
+	otel.SetTracerProvider(tp)
+
+	defer func() {
+		if err := tp.Shutdown(ctx); err != nil {
+			log.Fatalf("Error shutting down tracer provider: %v", err)
+		}
+	}()
 
 	serv, err := New(WithConfig(*cfg))
 	if err != nil {
