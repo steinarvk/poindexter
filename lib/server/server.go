@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -119,6 +120,7 @@ func (s *Server) Run() error {
 	mux.Handle("/api/read/", s.middleware(readApiHandler{s.fooHandler}))
 
 	mux.Handle("/api/write/record/", s.middleware(writeApiHandler{s.writeSingleRecordHandler}))
+	mux.Handle("/api/write/jsonl/", s.middleware(writeApiHandler{s.writeJSONLHandler}))
 
 	var wrappedHandler http.Handler = mux
 	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "recdex-server")
@@ -214,6 +216,37 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 func (s *Server) fooHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
 	response := map[string]string{"message": "foo called", "namespace": namespace}
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) writeJSONLHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	const (
+		maxLines      = 100000
+		maxLineLength = 1024 * 1024
+	)
+
+	scanner := bufio.NewScanner(r.Body)
+	defer r.Body.Close()
+
+	buf := make([]byte, maxLineLength)
+	scanner.Buffer(buf, maxLineLength)
+
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		if len(lines) > maxLines {
+			return fmt.Errorf("too many lines")
+		}
+	}
+
+	response, err := s.db.InsertFlattenedRecords(ctx, namespace, lines)
+	if err != nil {
+		return err
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(response)
 }
