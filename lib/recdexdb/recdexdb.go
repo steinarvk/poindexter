@@ -372,9 +372,6 @@ func (d *DB) insertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, 
 }
 
 func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, recordEntries []indexedFlattenedEntry) ([]InsertionResult, error) {
-	// TODO: must maintain constraints:
-	//   - any record can be superseded at most once.
-
 	// Note that we cannot require that the superseded record exists,
 	// because batches can be arbitrarily reordered.
 	// This should be required in the single-item insertion function.
@@ -406,6 +403,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 
 	keysRequiredMap := map[string]struct{}{}
 	toInsertRecordIDs := map[uuid.UUID]struct{}{}
+	supersededUUIDs := map[uuid.UUID]struct{}{}
 	var allRecordIDs []uuid.UUID
 	var allRecordHashes []string
 	for _, recordEntry := range recordEntries {
@@ -415,6 +413,14 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		toInsertRecordIDs[record.RecordUUID] = struct{}{}
 		for _, k := range record.Fields {
 			keysRequiredMap[k] = struct{}{}
+		}
+		if record.SupersedesUUID != nil {
+			k := *record.SupersedesUUID
+			_, alreadyPresent := supersededUUIDs[k]
+			if alreadyPresent {
+				return nil, fmt.Errorf("duplicate superseded UUID (within batch): %v", k)
+			}
+			supersededUUIDs[k] = struct{}{}
 		}
 	}
 
@@ -433,6 +439,27 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		return nil, fmt.Errorf("error starting new transaction: %w", err)
 	}
 	tx = newTx
+
+	// Check which superseded records already exist in the database.
+	// Records can be superseded exactly once, but it might be within the batch or in the database.
+	// Any duplicate within the batch is an error, and any collision with the DB is also an error.
+	// We already checked within the batch.
+	if len(supersededUUIDs) > 0 {
+		rows, err := tx.QueryContext(ctx, "SELECT record_supersedes_id FROM records WHERE namespace_id = $1 AND record_supersedes_id = ANY($2)", nsid, pq.Array(supersededUUIDs))
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var recordID uuid.UUID
+			if err := rows.Scan(&recordID); err != nil {
+				return nil, err
+			}
+
+			return nil, fmt.Errorf("duplicate superseded UUID (vs. database): %v", recordID)
+		}
+	}
 
 	// Check for duplicates, to omit them from the batch insert.
 	rows, err := tx.QueryContext(ctx, "SELECT record_id FROM records WHERE namespace_id = $1 AND (record_id = ANY($2) OR record_hash = ANY($3))", nsid, pq.Array(allRecordIDs), pq.Array(allRecordHashes))
@@ -1008,8 +1035,6 @@ func (d *DB) getTableStats(ctx context.Context) (map[string]TableStats, error) {
 }
 
 func (d *DB) InsertObject(ctx context.Context, namespaceName string, value interface{}) (*uuid.UUID, error) {
-	// TODO additionally check whether "superseded" actually exists.
-
 	flattener := d.makeFlattener()
 
 	nsid, err := d.getNamespaceID(namespaceName)
@@ -1020,6 +1045,22 @@ func (d *DB) InsertObject(ctx context.Context, namespaceName string, value inter
 	flat, err := flattener.FlattenObject(value)
 	if err != nil {
 		return nil, err
+	}
+
+	if flat.SupersedesUUID != nil {
+		// Check that the object actually exists.
+		var count int
+		if err := d.db.QueryRowContext(ctx, "SELECT COUNT(record_id) FROM records WHERE namespace_id = $1 AND record_id = $2", nsid, *flat.SupersedesUUID).Scan(&count); err != nil {
+			return nil, err
+		}
+
+		if count == 0 {
+			return nil, fmt.Errorf("record to be superseded (%q) does not exist", *flat.SupersedesUUID)
+		}
+
+		if count > 1 {
+			return nil, errors.New("internal error: multiple records with same UUID")
+		}
 	}
 
 	singletonBatch := []indexedFlattenedEntry{
