@@ -195,6 +195,22 @@ func Main() {
 		},
 	}
 
+	var printTestQuerySQLCmd = &cobra.Command{
+		Use:   "print-test-query-sql",
+		Short: "Print a test query SQL",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query, queryargs, err := recdexdb.BuildTestQuery()
+			if err != nil {
+				return err
+			}
+
+			fmt.Println(query)
+			fmt.Println(queryargs)
+
+			return nil
+		},
+	}
+
 	var syncSingleFileCmd = &cobra.Command{
 		Use:   "syncfile",
 		Short: "Flatten and upload one or more files using direct database access",
@@ -287,7 +303,7 @@ func Main() {
 	syncCmd.AddCommand(watchCmd)
 	serverCmd.AddCommand(createServerCmd, addClientCmd, grantAccessCmd)
 	adminCmd.AddCommand(listClients, statsCmd)
-	scratchCmd.AddCommand(syncSingleFileCmd)
+	scratchCmd.AddCommand(syncSingleFileCmd, printTestQuerySQLCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
