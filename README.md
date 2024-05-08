@@ -1,1 +1,1 @@
-# recdex - a convenient document database for small and medium data
+# poindexter - a convenient document database for small and medium data

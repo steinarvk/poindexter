@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/XSAM/otelsql"
-	"github.com/steinarvk/recdex/lib/config"
-	"github.com/steinarvk/recdex/lib/recdexdb"
+	"github.com/steinarvk/poindexter/lib/config"
+	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"go.opentelemetry.io/otel"
@@ -32,7 +32,7 @@ type Server struct {
 	host   string
 	port   int
 	config config.Config
-	db     *recdexdb.DB
+	db     *poindexterdb.DB
 }
 
 // NewServer creates a new server with default values and applies given options
@@ -53,13 +53,13 @@ func New(options ...Option) (*Server, error) {
 		return nil, err
 	}
 
-	postgresCreds := recdexdb.PostgresConfig{
+	postgresCreds := poindexterdb.PostgresConfig{
 		PostgresHost: os.Getenv("PGHOST"),
 		PostgresUser: os.Getenv("PGUSER"),
 		PostgresDB:   os.Getenv("PGDATABASE"),
 		PostgresPass: os.Getenv("PGPASSWORD"),
 	}
-	params := recdexdb.Params{
+	params := poindexterdb.Params{
 		Postgres:      postgresCreds,
 		SQLDriverName: driverName,
 		Verbosity:     0,
@@ -67,7 +67,7 @@ func New(options ...Option) (*Server, error) {
 
 	ctx := context.Background()
 
-	db, err := recdexdb.Open(ctx, params, s.config)
+	db, err := poindexterdb.Open(ctx, params, s.config)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ func (s *Server) Run() error {
 	mux.Handle("/api/write/jsonl/", s.middleware(writeApiHandler{s.writeJSONLHandler}))
 
 	var wrappedHandler http.Handler = mux
-	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "recdex-server")
+	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "poindexter-server")
 
 	address := fmt.Sprintf("%s:%d", s.host, s.port)
 	fmt.Printf("Server is running on %s\n", address)
@@ -311,9 +311,9 @@ func (e *CustomSpanExporter) Shutdown(ctx context.Context) error {
 func Main() error {
 	ctx := context.Background()
 
-	configValue := os.Getenv("RECDEX_CONFIG")
+	configValue := os.Getenv("POINDEXTER_CONFIG")
 	if configValue == "" {
-		return fmt.Errorf("RECDEX_CONFIG environment variable not set")
+		return fmt.Errorf("POINDEXTER_CONFIG environment variable not set")
 	}
 
 	cfg, err := config.Load(configValue)
@@ -332,7 +332,7 @@ func Main() error {
 		trace.WithBatcher(customExporter),
 		trace.WithResource(resource.NewWithAttributes(
 			semconv.SchemaURL,
-			semconv.ServiceNameKey.String("recdex-server"),
+			semconv.ServiceNameKey.String("poindexter-server"),
 		)),
 	)
 

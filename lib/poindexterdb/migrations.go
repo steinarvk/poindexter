@@ -1,4 +1,4 @@
-package recdexdb
+package poindexterdb
 
 import (
 	"embed"

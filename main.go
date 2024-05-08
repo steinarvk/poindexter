@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/steinarvk/recdex/lib/cli"
+	"github.com/steinarvk/poindexter/lib/cli"
 )
 
 func main() {

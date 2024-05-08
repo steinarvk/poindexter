@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steinarvk/recdex/lib/config"
-	"github.com/steinarvk/recdex/lib/recdexdb"
-	"github.com/steinarvk/recdex/lib/server"
+	"github.com/steinarvk/poindexter/lib/config"
+	"github.com/steinarvk/poindexter/lib/poindexterdb"
+	"github.com/steinarvk/poindexter/lib/server"
 )
 
 func readLinesFromFile(filename string, maxLineLength int) ([]string, error) {
@@ -46,7 +46,7 @@ var (
 )
 
 func Main() {
-	var rootCmd = &cobra.Command{Use: "recdex"}
+	var rootCmd = &cobra.Command{Use: "poindexter"}
 
 	var serveCmd = &cobra.Command{
 		Use:   "serve",
@@ -134,20 +134,20 @@ func Main() {
 		Use:   "stats",
 		Short: "Get statistics on database using direct database access",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			postgresCreds := recdexdb.PostgresConfig{
+			postgresCreds := poindexterdb.PostgresConfig{
 				PostgresHost: os.Getenv("PGHOST"),
 				PostgresUser: os.Getenv("PGUSER"),
 				PostgresDB:   os.Getenv("PGDATABASE"),
 				PostgresPass: os.Getenv("PGPASSWORD"),
 			}
-			params := recdexdb.Params{
+			params := poindexterdb.Params{
 				Postgres:  postgresCreds,
 				Verbosity: 0,
 			}
 
-			configValue := os.Getenv("RECDEX_CONFIG")
+			configValue := os.Getenv("POINDEXTER_CONFIG")
 			if configValue == "" {
-				return fmt.Errorf("RECDEX_CONFIG environment variable not set")
+				return fmt.Errorf("POINDEXTER_CONFIG environment variable not set")
 			}
 
 			cfg, err := config.Load(configValue)
@@ -157,7 +157,7 @@ func Main() {
 
 			ctx := context.Background()
 
-			db, err := recdexdb.Open(ctx, params, *cfg)
+			db, err := poindexterdb.Open(ctx, params, *cfg)
 			if err != nil {
 				return err
 			}
@@ -199,7 +199,7 @@ func Main() {
 		Use:   "print-test-query-sql",
 		Short: "Print a test query SQL",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			query, queryargs, err := recdexdb.BuildTestQuery()
+			query, queryargs, err := poindexterdb.BuildTestQuery()
 			if err != nil {
 				return err
 			}
@@ -215,22 +215,22 @@ func Main() {
 		Use:   "syncfile",
 		Short: "Flatten and upload one or more files using direct database access",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			postgresCreds := recdexdb.PostgresConfig{
+			postgresCreds := poindexterdb.PostgresConfig{
 				PostgresHost: os.Getenv("PGHOST"),
 				PostgresUser: os.Getenv("PGUSER"),
 				PostgresDB:   os.Getenv("PGDATABASE"),
 				PostgresPass: os.Getenv("PGPASSWORD"),
 			}
-			params := recdexdb.Params{
+			params := poindexterdb.Params{
 				Postgres:  postgresCreds,
 				Verbosity: 9,
 			}
 
 			namespaceName := "main"
 
-			configValue := os.Getenv("RECDEX_CONFIG")
+			configValue := os.Getenv("POINDEXTER_CONFIG")
 			if configValue == "" {
-				return fmt.Errorf("RECDEX_CONFIG environment variable not set")
+				return fmt.Errorf("POINDEXTER_CONFIG environment variable not set")
 			}
 
 			ctx := context.Background()
@@ -240,7 +240,7 @@ func Main() {
 				return err
 			}
 
-			db, err := recdexdb.Open(ctx, params, *cfg)
+			db, err := poindexterdb.Open(ctx, params, *cfg)
 			if err != nil {
 				return err
 			}

@@ -1,4 +1,4 @@
-package recdexdb
+package poindexterdb
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
-	"github.com/steinarvk/recdex/lib/config"
-	"github.com/steinarvk/recdex/lib/flatten"
+	"github.com/steinarvk/poindexter/lib/config"
+	"github.com/steinarvk/poindexter/lib/flatten"
 )
 
 type Namespace int
@@ -672,7 +672,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 	}
 
 	if params.Verbosity > 1 {
-		log.Printf("recdexdb ready")
+		log.Printf("poindexterdb ready")
 	}
 
 	return db, nil

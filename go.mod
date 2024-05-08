@@ -1,4 +1,4 @@
-module github.com/steinarvk/recdex
+module github.com/steinarvk/poindexter
 
 go 1.21.6
 

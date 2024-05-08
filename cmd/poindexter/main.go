@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
-	"github.com/steinarvk/recdex/lib/flatten"
+	"github.com/steinarvk/poindexter/lib/flatten"
 )
 
 func flattenRecords(reader io.Reader) ([]*flatten.Record, error) {
