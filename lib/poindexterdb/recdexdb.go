@@ -3,6 +3,7 @@ package poindexterdb
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/steinarvk/poindexter/lib/config"
+	"github.com/steinarvk/poindexter/lib/dexapi"
 	"github.com/steinarvk/poindexter/lib/flatten"
 )
 
@@ -1164,14 +1166,14 @@ func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, l
 	return summary, nil
 }
 
-type RawRecordItem struct {
-	Namespace string
-	RecordID  uuid.UUID
-	Timestamp time.Time
-	Data      []byte
-}
+func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuery, outCh chan<- dexapi.RawRecordItem, options ...RequestOption) error {
+	opts := requestOptions{}
+	for _, o := range options {
+		if err := o(&opts); err != nil {
+			return err
+		}
+	}
 
-func (d *DB) queryRecords(ctx context.Context, q Query, outCh chan<- RawRecordItem) error {
 	if q.OmitLocked {
 		return fmt.Errorf("not yet supported (TODO): omit_locked")
 	}
@@ -1180,18 +1182,18 @@ func (d *DB) queryRecords(ctx context.Context, q Query, outCh chan<- RawRecordIt
 		return fmt.Errorf("not yet supported (TODO): omit_superseded")
 	}
 
-	if q.TimestampBefore != nil || q.TimestampAfter != nil {
+	if q.TimestampStart != nil || q.TimestampEnd != nil {
 		return fmt.Errorf("not yet supported (TODO): timestamp filter")
 	}
 
-	nsid, err := d.getNamespaceID(q.Namespace)
+	nsid, err := d.getNamespaceID(namespace)
 	if err != nil {
 		return err
 	}
 
 	qb := newQueryBuilder((nsid))
 
-	for _, key := range q.FieldsPresent {
+	for _, key := range q.Filter.FieldsPresent {
 		if q.TreatNullsAsAbsent {
 			if err := qb.addFieldPresentAndNotNull(key); err != nil {
 				return err
@@ -1203,9 +1205,29 @@ func (d *DB) queryRecords(ctx context.Context, q Query, outCh chan<- RawRecordIt
 		}
 	}
 
-	for key, values := range q.FieldValues {
+	for key, values := range q.Filter.FieldValues {
 		for _, value := range values {
 			if err := qb.addFieldHasValue(key, value); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, key := range q.Exclude.FieldsPresent {
+		if q.TreatNullsAsAbsent {
+			if err := qb.addNegatedFieldPresentAndNotNull(key); err != nil {
+				return err
+			}
+		} else {
+			if err := qb.addNegatedFieldPresent(key); err != nil {
+				return err
+			}
+		}
+	}
+
+	for key, values := range q.Exclude.FieldValues {
+		for _, value := range values {
+			if err := qb.addNegatedFieldHasValue(key, value); err != nil {
 				return err
 			}
 		}
@@ -1221,7 +1243,7 @@ func (d *DB) queryRecords(ctx context.Context, q Query, outCh chan<- RawRecordIt
 
 	log.Printf("executing query with arguments %v: query %s", queryArgs, queryString)
 
-	executeQueryTwiceAndExplain := q.Debug
+	executeQueryTwiceAndExplain := opts.debug
 	if executeQueryTwiceAndExplain {
 		rows, err := d.db.QueryContext(ctx, "EXPLAIN ANALYZE "+queryString, queryArgs...)
 		if err != nil {
@@ -1245,8 +1267,6 @@ func (d *DB) queryRecords(ctx context.Context, q Query, outCh chan<- RawRecordIt
 	defer rows.Close()
 
 	for rows.Next() {
-		log.Printf("processing new result")
-
 		var recordID uuid.UUID
 		var recordTimestamp time.Time
 		var recordData []byte
@@ -1255,25 +1275,26 @@ func (d *DB) queryRecords(ctx context.Context, q Query, outCh chan<- RawRecordIt
 			return err
 		}
 
-		item := RawRecordItem{
-			Namespace: q.Namespace,
-			RecordID:  recordID,
-			Timestamp: recordTimestamp,
-			Data:      recordData,
+		item := dexapi.RawRecordItem{
+			RecordMetadata: dexapi.RecordMetadata{
+				Namespace:         namespace,
+				RecordID:          recordID.String(),
+				Timestamp:         recordTimestamp.Format(time.RFC3339Nano),
+				TimestampUnixNano: fmt.Sprintf("%d", recordTimestamp.UnixNano()),
+			},
+			RawRecord: recordData,
 		}
 
 		outCh <- item
 	}
 
-	log.Printf("done processing results")
-
 	return nil
 }
 
-func (d *DB) QueryRecordsRawList(ctx context.Context, q Query) ([]RawRecordItem, error) {
-	ch := make(chan RawRecordItem, 100)
+func (d *DB) QueryRecordsRawList(ctx context.Context, namespace string, q *CompiledQuery, options ...RequestOption) ([]dexapi.RawRecordItem, error) {
+	ch := make(chan dexapi.RawRecordItem, 100)
 
-	var items []RawRecordItem
+	var items []dexapi.RawRecordItem
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -1284,13 +1305,35 @@ func (d *DB) QueryRecordsRawList(ctx context.Context, q Query) ([]RawRecordItem,
 		wg.Done()
 	}()
 
-	if err := d.queryRecords(ctx, q, ch); err != nil {
+	if err := d.queryRecords(ctx, namespace, q, ch, options...); err != nil {
 		close(ch)
 		return nil, err
 	}
 	close(ch)
 
 	wg.Wait()
+
+	return items, nil
+}
+
+func (d *DB) QueryRecordsList(ctx context.Context, namespace string, q *CompiledQuery, options ...RequestOption) ([]dexapi.RecordItem, error) {
+	rv, err := d.QueryRecordsRawList(ctx, namespace, q, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]dexapi.RecordItem, len(rv))
+	for i, rawItem := range rv {
+		item := dexapi.RecordItem{
+			RecordMetadata: rawItem.RecordMetadata,
+		}
+
+		if err := json.Unmarshal(rawItem.RawRecord, &item.Record); err != nil {
+			return nil, err
+		}
+
+		items[i] = item
+	}
 
 	return items, nil
 }

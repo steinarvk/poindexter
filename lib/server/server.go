@@ -13,6 +13,7 @@ import (
 
 	"github.com/XSAM/otelsql"
 	"github.com/steinarvk/poindexter/lib/config"
+	"github.com/steinarvk/poindexter/lib/dexapi"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -246,54 +247,23 @@ type simpleReq struct {
 func (s *Server) readQueryRecordsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
-	var req simpleReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var queryReq dexapi.Query
+	if err := json.NewDecoder(r.Body).Decode(&queryReq); err != nil {
 		return err
 	}
 	defer r.Body.Close()
 
-	if req.Namespace != "" && req.Namespace != namespace {
-		return fmt.Errorf("namespace specified in request; mismatch (%q vs %q)", req.Namespace, namespace)
-	}
-
-	req.Namespace = namespace
-
-	query := poindexterdb.Query{
-		Namespace:          namespace,
-		TreatNullsAsAbsent: true,
-		Limit:              req.Limit,
-		FieldsPresent:      req.LowLevelFieldsPresent,
-		FieldValues:        req.LowLevelFieldHasValue,
-	}
-
-	query.Limit = 10
-
-	items, err := s.db.QueryRecordsRawList(ctx, query)
+	cq, err := s.db.CompileQuery(&queryReq)
 	if err != nil {
 		return fmt.Errorf("query error: %w", err)
 	}
 
-	var responseItems []interface{}
-
-	for _, item := range items {
-		var unmarshalled interface{}
-		if err := json.Unmarshal(item.Data, &unmarshalled); err != nil {
-			return fmt.Errorf("unmarshal item error: %w", err)
-		}
-
-		newItem := map[string]interface{}{
-			"record_id": item.RecordID.String(),
-			"timestamp": item.Timestamp.Format(time.RFC3339),
-			"record":    unmarshalled,
-		}
-
-		responseItems = append(responseItems, newItem)
+	items, err := s.db.QueryRecordsList(ctx, namespace, cq)
+	if err != nil {
+		return fmt.Errorf("query error: %w", err)
 	}
 
-	response := map[string]interface{}{
-		"namespace": namespace,
-		"records":   responseItems,
-	}
+	response := dexapi.RecordList{Records: items}
 
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(response)

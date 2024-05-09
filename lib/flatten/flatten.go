@@ -301,33 +301,11 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 	return f.FlattenObject(unmarshalled)
 }
 
-func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
-	canonicalForm, err := canonicaljson.Marshal(unmarshalled)
-	if err != nil {
-		return nil, canonicalizationError{err}
-	}
-
-	if len(canonicalForm) > f.MaxSerializedLength {
-		return nil, errTooLong
-	}
-
-	unmarshalledObj, ok := unmarshalled.(map[string]interface{})
-	if !ok {
-		return nil, errNotObject
-	}
-
-	for _, ff := range falseFriends {
-		if _, ok := unmarshalledObj[ff.badFieldName]; ok {
-			return nil, fmt.Errorf("forbidden top-level field %q (the intent was probably %q)", ff.badFieldName, ff.actualFieldName)
-		}
-	}
-
-	recordHash := hashData(canonicalForm)
-
+func (f *Flattener) flattenObjectToFields(unmarshalled interface{}) (map[string][][]byte, map[string]bool, error) {
 	fieldValues := map[string][][]byte{}
 	fieldsPresent := map[string]bool{}
 
-	if err := visitJSON(nil, unmarshalledObj, func(elements []PathElement, value interface{}) (bool, error) {
+	if err := visitJSON(nil, unmarshalled, func(elements []PathElement, value interface{}) (bool, error) {
 		if len(elements) == 0 {
 			return true, nil
 		}
@@ -375,8 +353,44 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 
 		return true, nil
 	}); err != nil {
+		return nil, nil, err
+	}
+
+	return fieldValues, fieldsPresent, nil
+}
+
+func (f *Flattener) FlattenObjectToFields(unmarshalled interface{}) (map[string][][]byte, error) {
+	values, _, err := f.flattenObjectToFields(unmarshalled)
+	return values, err
+}
+
+func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
+	canonicalForm, err := canonicaljson.Marshal(unmarshalled)
+	if err != nil {
+		return nil, canonicalizationError{err}
+	}
+
+	if len(canonicalForm) > f.MaxSerializedLength {
+		return nil, errTooLong
+	}
+
+	unmarshalledObj, ok := unmarshalled.(map[string]interface{})
+	if !ok {
+		return nil, errNotObject
+	}
+
+	fieldValues, fieldsPresent, err := f.flattenObjectToFields(unmarshalledObj)
+	if err != nil {
 		return nil, err
 	}
+
+	for _, ff := range falseFriends {
+		if _, ok := unmarshalledObj[ff.badFieldName]; ok {
+			return nil, fmt.Errorf("forbidden top-level field %q (the intent was probably %q)", ff.badFieldName, ff.actualFieldName)
+		}
+	}
+
+	recordHash := hashData(canonicalForm)
 
 	var recordID string
 	for _, idFieldName := range validIDFieldNames {

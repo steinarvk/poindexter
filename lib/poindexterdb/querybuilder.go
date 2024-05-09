@@ -1,10 +1,10 @@
 package poindexterdb
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/gibson042/canonicaljson-go"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
@@ -156,19 +156,13 @@ func (qb *queryBuilder) addFieldPresentAndNotNull(keyName string) error {
 	return err
 }
 
-func (qb *queryBuilder) addFieldHasValue(keyName string, value interface{}) error {
+func (qb *queryBuilder) addFieldHasValue(keyName string, canonicalizedValue string) error {
 	alias, err := qb.addJoinForKeyValue(keyName)
 	if err != nil {
 		return err
 	}
 
-	serializedValue, err := canonicaljson.Marshal(value)
-	if err != nil {
-		return err
-	}
-	serializedString := string(serializedValue)
-
-	argname := qb.addArg(serializedString)
+	argname := qb.addArg(canonicalizedValue)
 
 	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s.value = %s", alias, argname))
 
@@ -210,4 +204,16 @@ func BuildTestQuery() (string, []interface{}, error) {
 	}
 
 	return qb.buildQuery()
+}
+
+func (qb *queryBuilder) addNegatedFieldPresentAndNotNull(keyName string) error {
+	return errors.New("negations not yet implemented TODO")
+}
+
+func (qb *queryBuilder) addNegatedFieldPresent(keyName string) error {
+	return errors.New("negations not yet implemented TODO")
+}
+
+func (qb *queryBuilder) addNegatedFieldHasValue(keyName string, canonicalizedValue string) error {
+	return errors.New("negations not yet implemented TODO")
 }
