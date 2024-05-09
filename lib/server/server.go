@@ -120,7 +120,8 @@ type apiHandlerFunc func(namespace string, w http.ResponseWriter, r *http.Reques
 // Run starts the server
 func (s *Server) Run() error {
 	mux := http.NewServeMux()
-	mux.Handle("/api/read/", s.middleware(readApiHandler{s.fooHandler}))
+	mux.Handle("/api/read/records/", s.middleware(readApiHandler{s.readQueryRecordsHandler}))
+	mux.Handle("/api/read/fields/", s.middleware(readApiHandler{s.readQueryFieldsHandler}))
 
 	mux.Handle("/api/write/record/", s.middleware(writeApiHandler{s.writeSingleRecordHandler}))
 	mux.Handle("/api/write/jsonl/", s.middleware(writeApiHandler{s.writeJSONLHandler}))
@@ -217,8 +218,83 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 	})
 }
 
-func (s *Server) fooHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
-	response := map[string]string{"message": "foo called", "namespace": namespace}
+func (s *Server) readQueryFieldsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	var req interface{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return err
+	}
+
+	defer r.Body.Close()
+
+	response := map[string]interface{}{
+		"message":        "foo called",
+		"namespace":      namespace,
+		"request":        req,
+		"implementation": "TODO",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(response)
+}
+
+type simpleReq struct {
+	Namespace             string                   `json:"namespace"`
+	Limit                 int                      `json:"limit"`
+	LowLevelFieldsPresent []string                 `json:"low_level_fields_present"`
+	LowLevelFieldHasValue map[string][]interface{} `json:"low_level_field_has_value"`
+}
+
+func (s *Server) readQueryRecordsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	var req simpleReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return err
+	}
+	defer r.Body.Close()
+
+	if req.Namespace != "" && req.Namespace != namespace {
+		return fmt.Errorf("namespace specified in request; mismatch (%q vs %q)", req.Namespace, namespace)
+	}
+
+	req.Namespace = namespace
+
+	query := poindexterdb.Query{
+		Namespace:          namespace,
+		TreatNullsAsAbsent: true,
+		Limit:              req.Limit,
+		FieldsPresent:      req.LowLevelFieldsPresent,
+		FieldValues:        req.LowLevelFieldHasValue,
+	}
+
+	query.Limit = 10
+
+	items, err := s.db.QueryRecordsRawList(ctx, query)
+	if err != nil {
+		return fmt.Errorf("query error: %w", err)
+	}
+
+	var responseItems []interface{}
+
+	for _, item := range items {
+		var unmarshalled interface{}
+		if err := json.Unmarshal(item.Data, &unmarshalled); err != nil {
+			return fmt.Errorf("unmarshal item error: %w", err)
+		}
+
+		newItem := map[string]interface{}{
+			"record_id": item.RecordID.String(),
+			"timestamp": item.Timestamp.Format(time.RFC3339),
+			"record":    unmarshalled,
+		}
+
+		responseItems = append(responseItems, newItem)
+	}
+
+	response := map[string]interface{}{
+		"namespace": namespace,
+		"records":   responseItems,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(response)
 }

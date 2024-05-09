@@ -1163,3 +1163,134 @@ func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, l
 
 	return summary, nil
 }
+
+type RawRecordItem struct {
+	Namespace string
+	RecordID  uuid.UUID
+	Timestamp time.Time
+	Data      []byte
+}
+
+func (d *DB) queryRecords(ctx context.Context, q Query, outCh chan<- RawRecordItem) error {
+	if q.OmitLocked {
+		return fmt.Errorf("not yet supported (TODO): omit_locked")
+	}
+
+	if q.OmitSuperseded {
+		return fmt.Errorf("not yet supported (TODO): omit_superseded")
+	}
+
+	if q.TimestampBefore != nil || q.TimestampAfter != nil {
+		return fmt.Errorf("not yet supported (TODO): timestamp filter")
+	}
+
+	nsid, err := d.getNamespaceID(q.Namespace)
+	if err != nil {
+		return err
+	}
+
+	qb := newQueryBuilder((nsid))
+
+	for _, key := range q.FieldsPresent {
+		if q.TreatNullsAsAbsent {
+			if err := qb.addFieldPresentAndNotNull(key); err != nil {
+				return err
+			}
+		} else {
+			if err := qb.addFieldPresent(key); err != nil {
+				return err
+			}
+		}
+	}
+
+	for key, values := range q.FieldValues {
+		for _, value := range values {
+			if err := qb.addFieldHasValue(key, value); err != nil {
+				return err
+			}
+		}
+	}
+
+	qb.selectClause = "records.record_id, records.record_timestamp, records.record_data"
+	qb.limit = q.Limit
+
+	queryString, queryArgs, err := qb.buildQuery()
+	if err != nil {
+		return err
+	}
+
+	log.Printf("executing query with arguments %v: query %s", queryArgs, queryString)
+
+	executeQueryTwiceAndExplain := q.Debug
+	if executeQueryTwiceAndExplain {
+		rows, err := d.db.QueryContext(ctx, "EXPLAIN ANALYZE "+queryString, queryArgs...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var explainLine string
+			if err := rows.Scan(&explainLine); err != nil {
+				return err
+			}
+			log.Printf("explain analyze: %s", explainLine)
+		}
+
+		rows.Close()
+	}
+
+	rows, err := d.db.QueryContext(ctx, queryString, queryArgs...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		log.Printf("processing new result")
+
+		var recordID uuid.UUID
+		var recordTimestamp time.Time
+		var recordData []byte
+
+		if err := rows.Scan(&recordID, &recordTimestamp, &recordData); err != nil {
+			return err
+		}
+
+		item := RawRecordItem{
+			Namespace: q.Namespace,
+			RecordID:  recordID,
+			Timestamp: recordTimestamp,
+			Data:      recordData,
+		}
+
+		outCh <- item
+	}
+
+	log.Printf("done processing results")
+
+	return nil
+}
+
+func (d *DB) QueryRecordsRawList(ctx context.Context, q Query) ([]RawRecordItem, error) {
+	ch := make(chan RawRecordItem, 100)
+
+	var items []RawRecordItem
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		for item := range ch {
+			items = append(items, item)
+		}
+		wg.Done()
+	}()
+
+	if err := d.queryRecords(ctx, q, ch); err != nil {
+		close(ch)
+		return nil, err
+	}
+	close(ch)
+
+	wg.Wait()
+
+	return items, nil
+}

@@ -1,6 +1,10 @@
 package poindexterdb
 
-import "time"
+import (
+	"time"
+)
+
+// This is NOT the real query API; it's low-level.
 
 type QueryOrder string
 
@@ -13,15 +17,18 @@ const (
 type Query struct {
 	Namespace string
 
-	OmitSuperseded bool
-	OmitLocked     bool
+	OmitSuperseded     bool
+	OmitLocked         bool
+	TreatNullsAsAbsent bool
 
 	TimestampBefore *time.Time
 	TimestampAfter  *time.Time
 
 	FieldsPresent []string
-	FieldValues   map[string]interface{}
+	FieldValues   map[string][]interface{}
 
 	Order QueryOrder
 	Limit int
+
+	Debug bool
 }
