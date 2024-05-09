@@ -1233,6 +1233,10 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		}
 	}
 
+	if err := qb.setOrderBy(q.OrderBy); err != nil {
+		return err
+	}
+
 	qb.selectClause = "records.record_id, records.record_timestamp, records.record_data"
 	qb.limit = q.Limit
 

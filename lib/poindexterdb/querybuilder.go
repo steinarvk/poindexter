@@ -3,10 +3,12 @@ package poindexterdb
 import (
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/steinarvk/poindexter/lib/dexapi"
 )
 
 type queryBuilder struct {
@@ -216,4 +218,30 @@ func (qb *queryBuilder) addNegatedFieldPresent(keyName string) error {
 
 func (qb *queryBuilder) addNegatedFieldHasValue(keyName string, canonicalizedValue string) error {
 	return errors.New("negations not yet implemented TODO")
+}
+
+func (qb *queryBuilder) setOrderBy(orderBy dexapi.OrderBy) error {
+	var prefix string
+	suffix := "ASC"
+
+	log.Printf("setting orderby: %+v", orderBy)
+
+	if orderBy.Descending {
+		suffix = "DESC"
+	}
+
+	switch orderBy.Variant {
+	case dexapi.OrderByTime:
+		prefix = "records.record_timestamp"
+	case dexapi.OrderByID:
+		prefix = "records.record_id"
+	case dexapi.OrderByRandom:
+		prefix = "RANDOM()"
+	default:
+		return fmt.Errorf("unknown order-by variant: %s", orderBy.Variant)
+	}
+
+	qb.orderClause = prefix + " " + suffix
+
+	return nil
 }
