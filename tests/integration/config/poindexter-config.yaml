@@ -1,0 +1,9 @@
+namespaces:
+- main
+clients:
+  alice:
+    shared_secret: "hunter2hunter2hunter2hunter2hunter2hunter2hunter2hunter2hunter2hunter2"
+    access:
+      main:
+        read_access: true
+        write_access: true

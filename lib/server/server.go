@@ -30,10 +30,11 @@ type Option func(*Server) error
 
 // Server holds the HTTP server configuration
 type Server struct {
-	host   string
-	port   int
-	config config.Config
-	db     *poindexterdb.DB
+	host       string
+	port       int
+	config     config.Config
+	db         *poindexterdb.DB
+	httpServer *http.Server
 }
 
 // NewServer creates a new server with default values and applies given options
@@ -47,6 +48,11 @@ func New(options ...Option) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	address := fmt.Sprintf("%s:%d", s.host, s.port)
+	s.httpServer = &http.Server{
+		Addr: address,
 	}
 
 	driverName, err := otelsql.Register("postgres")
@@ -130,9 +136,15 @@ func (s *Server) Run() error {
 	var wrappedHandler http.Handler = mux
 	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "poindexter-server")
 
-	address := fmt.Sprintf("%s:%d", s.host, s.port)
-	fmt.Printf("Server is running on %s\n", address)
-	return http.ListenAndServe(address, wrappedHandler)
+	s.httpServer.Handler = wrappedHandler
+
+	fmt.Printf("Server is running on %s\n", s.httpServer.Addr)
+
+	return s.httpServer.ListenAndServe()
+}
+
+func (s *Server) HTTPServer() *http.Server {
+	return s.httpServer
 }
 
 type VerifyingApiHandler interface {
@@ -214,7 +226,14 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 				serveUnauthorized()
 				return
 			}
-			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+
+			if apiErr, ok := dexapi.AsError(err); ok {
+				log.Printf("API error: %v", err)
+				writeJSONError(w, apiErr.Error(), apiErr.StatusCode)
+			} else {
+				log.Printf("Generic error: %v", err)
+				writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			}
 		}
 	})
 }

@@ -245,3 +245,20 @@ func (qb *queryBuilder) setOrderBy(orderBy dexapi.OrderBy) error {
 
 	return nil
 }
+
+func (qb *queryBuilder) setOmitSuperseded() error {
+	qb.joinClauses = append(qb.joinClauses,
+		"LEFT OUTER JOIN records AS sup_records "+
+			"ON ( "+
+			"(records.namespace_id = sup_records.namespace_id) "+
+			"AND "+
+			"(records.record_id = sup_records.record_supersedes_id) "+
+			")",
+	)
+
+	qb.whereClauses = append(qb.whereClauses,
+		"sup_records.record_id IS NULL",
+	)
+
+	return nil
+}

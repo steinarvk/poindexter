@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -447,7 +448,12 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 	// Any duplicate within the batch is an error, and any collision with the DB is also an error.
 	// We already checked within the batch.
 	if len(supersededUUIDs) > 0 {
-		rows, err := tx.QueryContext(ctx, "SELECT record_supersedes_id FROM records WHERE namespace_id = $1 AND record_supersedes_id = ANY($2)", nsid, pq.Array(supersededUUIDs))
+		var supersededList []uuid.UUID
+		for k := range supersededUUIDs {
+			supersededList = append(supersededList, k)
+		}
+
+		rows, err := tx.QueryContext(ctx, "SELECT record_supersedes_id FROM records WHERE namespace_id = $1 AND record_supersedes_id = ANY($2)", nsid, pq.Array(supersededList))
 		if err != nil {
 			return nil, err
 		}
@@ -1057,7 +1063,10 @@ func (d *DB) InsertObject(ctx context.Context, namespaceName string, value inter
 		}
 
 		if count == 0 {
-			return nil, fmt.Errorf("record to be superseded (%q) does not exist", *flat.SupersedesUUID)
+			return nil, dexapi.Error(
+				http.StatusBadRequest,
+				fmt.Sprintf("record to be superseded (%q) does not exist", *flat.SupersedesUUID),
+			)
 		}
 
 		if count > 1 {
@@ -1174,24 +1183,26 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		}
 	}
 
-	if q.OmitLocked {
-		return fmt.Errorf("not yet supported (TODO): omit_locked")
-	}
-
-	if q.OmitSuperseded {
-		return fmt.Errorf("not yet supported (TODO): omit_superseded")
-	}
-
-	if q.TimestampStart != nil || q.TimestampEnd != nil {
-		return fmt.Errorf("not yet supported (TODO): timestamp filter")
-	}
-
 	nsid, err := d.getNamespaceID(namespace)
 	if err != nil {
 		return err
 	}
 
 	qb := newQueryBuilder((nsid))
+
+	if q.OmitLocked {
+		return fmt.Errorf("not yet supported (TODO): omit_locked")
+	}
+
+	if q.OmitSuperseded {
+		if err := qb.setOmitSuperseded(); err != nil {
+			return err
+		}
+	}
+
+	if q.TimestampStart != nil || q.TimestampEnd != nil {
+		return fmt.Errorf("not yet supported (TODO): timestamp filter")
+	}
 
 	for _, key := range q.Filter.FieldsPresent {
 		if q.TreatNullsAsAbsent {
