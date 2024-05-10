@@ -3,21 +3,26 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/XSAM/otelsql"
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/dexapi"
+	"github.com/steinarvk/poindexter/lib/dexerror"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -30,11 +35,12 @@ type Option func(*Server) error
 
 // Server holds the HTTP server configuration
 type Server struct {
-	host       string
-	port       int
-	config     config.Config
-	db         *poindexterdb.DB
-	httpServer *http.Server
+	host          string
+	port          int
+	config        config.Config
+	db            *poindexterdb.DB
+	httpServer    *http.Server
+	postgresCreds poindexterdb.PostgresConfig
 }
 
 // NewServer creates a new server with default values and applies given options
@@ -60,14 +66,8 @@ func New(options ...Option) (*Server, error) {
 		return nil, err
 	}
 
-	postgresCreds := poindexterdb.PostgresConfig{
-		PostgresHost: os.Getenv("PGHOST"),
-		PostgresUser: os.Getenv("PGUSER"),
-		PostgresDB:   os.Getenv("PGDATABASE"),
-		PostgresPass: os.Getenv("PGPASSWORD"),
-	}
 	params := poindexterdb.Params{
-		Postgres:      postgresCreds,
+		Postgres:      s.postgresCreds,
 		SQLDriverName: driverName,
 		Verbosity:     0,
 	}
@@ -86,6 +86,13 @@ func New(options ...Option) (*Server, error) {
 
 func (s *Server) Close() error {
 	return s.db.Close()
+}
+
+func WithPostgresCreds(creds poindexterdb.PostgresConfig) Option {
+	return func(s *Server) error {
+		s.postgresCreds = creds
+		return nil
+	}
 }
 
 func WithConfig(cfg config.Config) Option {
@@ -227,12 +234,27 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 				return
 			}
 
-			if apiErr, ok := dexapi.AsError(err); ok {
-				log.Printf("API error: %v", err)
-				writeJSONError(w, apiErr.Error(), apiErr.StatusCode)
+			apiErr := dexerror.AsPoindexterError(err)
+
+			log.Printf(
+				"error[%v]: %v [%v]",
+				apiErr.InternalErrorDetail().ErrorID,
+				apiErr.PublicErrorDetail().Message,
+				apiErr.InternalErrorDetail().Message,
+			)
+			response := dexapi.ErrorResponse{
+				Error: apiErr.PublicErrorDetail(),
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(apiErr.HTTPStatusCode())
+
+			marshalled, oopsErr := json.MarshalIndent(response, "", "  ")
+			if oopsErr != nil {
+				log.Printf("error marshalling error: %v", oopsErr)
+				w.Write([]byte(`{"error": {"message": "internal error"}}`))
 			} else {
-				log.Printf("Generic error: %v", err)
-				writeJSONError(w, err.Error(), http.StatusInternalServerError)
+				w.Write(marshalled)
 			}
 		}
 	})
@@ -373,8 +395,101 @@ func (e *CustomSpanExporter) Shutdown(ctx context.Context) error {
 	return e.delegate.Shutdown(ctx)
 }
 
+type VersionInfo struct {
+	CommitHash  string
+	CommitTime  string
+	DirtyCommit bool
+	BinaryHash  string
+}
+
+func (v VersionInfo) VersionString() string {
+	var rv string
+	if v.CommitHash != "" {
+		if v.DirtyCommit {
+			rv = fmt.Sprintf("git:%s-dirty", v.CommitHash)
+		} else {
+			rv = fmt.Sprintf("git:%s", v.CommitHash)
+		}
+	}
+
+	if (rv == "" || v.DirtyCommit) && v.BinaryHash != "" {
+		if rv != "" {
+			rv += "@"
+		}
+		rv += fmt.Sprintf("sha256:%s", v.BinaryHash)
+	}
+
+	return rv
+}
+
+func getVersionInfo(forceHash bool) (*VersionInfo, error) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return nil, errors.New("failed to read build info")
+	}
+
+	var rv VersionInfo
+
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			rv.CommitHash = setting.Value
+		}
+		if setting.Key == "vcs.modified" {
+			rv.DirtyCommit = setting.Value == "true"
+		}
+		if setting.Key == "vcs.time" {
+			rv.CommitTime = setting.Value
+		}
+	}
+
+	if rv.CommitHash == "" || rv.DirtyCommit || forceHash {
+		execPath, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+
+		file, err := os.Open(execPath)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+
+		h := sha256.New()
+
+		if _, err := io.Copy(h, file); err != nil {
+			return nil, err
+		}
+
+		hexdigest := fmt.Sprintf("%x", h.Sum(nil))
+		rv.BinaryHash = hexdigest[:8]
+	}
+
+	return &rv, nil
+}
+
 func Main() error {
 	ctx := context.Background()
+
+	info, err := getVersionInfo(false)
+	if err != nil {
+		return err
+	}
+
+	postgresCreds := poindexterdb.PostgresConfig{
+		PostgresHost: os.Getenv("PGHOST"),
+		PostgresUser: os.Getenv("PGUSER"),
+		PostgresDB:   os.Getenv("PGDATABASE"),
+		PostgresPass: os.Getenv("PGPASSWORD"),
+	}
+
+	traceAttributes := []attribute.KeyValue{
+		semconv.ServiceNameKey.String("poindexter-server"),
+		semconv.ServiceVersionKey.String(info.VersionString()),
+		semconv.HostNameKey.String(os.Getenv("HOSTNAME")),
+		attribute.String("database.name", postgresCreds.PostgresDB),
+	}
+
+	log.Printf("Version: %s", info.VersionString())
 
 	configValue := os.Getenv("POINDEXTER_CONFIG")
 	if configValue == "" {
@@ -395,10 +510,7 @@ func Main() error {
 
 	tp := trace.NewTracerProvider(
 		trace.WithBatcher(customExporter),
-		trace.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String("poindexter-server"),
-		)),
+		trace.WithResource(resource.NewSchemaless(traceAttributes...)),
 	)
 
 	otel.SetTracerProvider(tp)
@@ -409,7 +521,7 @@ func Main() error {
 		}
 	}()
 
-	serv, err := New(WithConfig(*cfg))
+	serv, err := New(WithConfig(*cfg), WithPostgresCreds(postgresCreds))
 	if err != nil {
 		return err
 	}

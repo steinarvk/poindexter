@@ -1,6 +1,13 @@
 package integrationtest
 
-import "testing"
+import (
+	"encoding/json"
+	"log"
+	"strings"
+	"testing"
+
+	"github.com/steinarvk/poindexter/lib/dexapi"
+)
 
 func TestSupersededRecords(t *testing.T) {
 	if _, err := postRequest("api/write/record/", WithJSON(`
@@ -94,13 +101,29 @@ func TestSupersededRecordsWithoutRespecting(t *testing.T) {
 }
 
 func TestSupersedingNonexistentFails(t *testing.T) {
-	if _, err := postRequest("api/write/record/", ExpectStatus(400), WithJSON(`
+	resp, err := postRequest("api/write/record/", ExpectStatus(400), WithJSON(`
 		{
 			"id": "60fd20a1-cf39-4f98-af43-80c6361d4dd0",
 			"timestamp": 1715316569,
 			"supersedes_id": "0b826f1e-fc26-44ca-87d2-684783c6d231"
 		}
-	`)); err != nil {
+	`))
+	if err != nil {
 		t.Fatal(err)
+	}
+
+	log.Printf("error response was: %v", string(resp.RawBody))
+
+	var errorResp dexapi.ErrorResponse
+	if err := json.Unmarshal(resp.RawBody, &errorResp); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+
+	if !strings.Contains(errorResp.Error.Message, "record to be superseded does not exist") {
+		t.Error("unexpected error message")
+	}
+
+	if errorResp.Error.Data["supersedes_id"] != "0b826f1e-fc26-44ca-87d2-684783c6d231" {
+		t.Error("unexpected error data")
 	}
 }

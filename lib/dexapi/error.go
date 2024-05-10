@@ -2,6 +2,10 @@ package dexapi
 
 import "errors"
 
+type PublicErrorDetail struct {
+	PublicMessage string `json:"message"`
+}
+
 type ErrorType struct {
 	StatusCode int
 	Message    string

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/steinarvk/poindexter/lib/config"
+	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/server"
 )
 
@@ -107,14 +108,17 @@ func TestMain(m *testing.M) {
 		log.Fatal(err)
 	}
 
-	os.Setenv("PGHOST", "localhost")
-	os.Setenv("PGUSER", "poindexter_test")
-	os.Setenv("PGPASSWORD", "testpassword")
-	os.Setenv("PGDATABASE", "poindexter_test")
+	postgresCreds := poindexterdb.PostgresConfig{
+		PostgresHost: "localhost",
+		PostgresUser: "poindexter_test",
+		PostgresPass: "testpassword",
+		PostgresDB:   "poindexter_test",
+	}
 	os.Setenv("PGPORT", "15433")
 
 	serv, err := server.New(
 		server.WithConfig(*cfg),
+		server.WithPostgresCreds(postgresCreds),
 		server.WithHost("localhost"),
 		server.WithPort(15244),
 	)

@@ -16,6 +16,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/dexapi"
+	"github.com/steinarvk/poindexter/lib/dexerror"
 	"github.com/steinarvk/poindexter/lib/flatten"
 )
 
@@ -1063,9 +1064,14 @@ func (d *DB) InsertObject(ctx context.Context, namespaceName string, value inter
 		}
 
 		if count == 0 {
-			return nil, dexapi.Error(
-				http.StatusBadRequest,
-				fmt.Sprintf("record to be superseded (%q) does not exist", *flat.SupersedesUUID),
+			return nil, dexerror.New(
+				dexerror.WithErrorID("bad_request.cannot_supersede_nonexistent"),
+				dexerror.WithHTTPCode(http.StatusBadRequest),
+				dexerror.WithPublicMessage("record to be superseded does not exist"),
+				dexerror.WithPublicData(
+					"supersedes_id",
+					flat.SupersedesUUID.String(),
+				),
 			)
 		}
 
