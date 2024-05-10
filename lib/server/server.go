@@ -15,6 +15,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/dexapi"
 	"github.com/steinarvk/poindexter/lib/dexerror"
+	"github.com/steinarvk/poindexter/lib/logging"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/version"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -189,6 +190,16 @@ func (v writeApiHandler) CheckAndServeHTTP(access config.AccessLevel, namespace 
 // middleware enforces basic auth and checks for a custom header, passing the validated username and namespace forward
 func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestLogger := zap.L().With(
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+
+		r = r.WithContext(logging.NewContextWithLogger(r.Context(), requestLogger))
+
+		requestLogger.Info("processing incoming request")
+
 		var authClient *config.Client
 
 		t0 := time.Now()
@@ -236,7 +247,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 			apiErr := dexerror.AsPoindexterError(err)
 
-			zap.L().Error(
+			requestLogger.Error(
 				apiErr.InternalErrorMessage(),
 				apiErr.InternalZapFields()...,
 			)
@@ -249,7 +260,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 			marshalled, oopsErr := json.MarshalIndent(response, "", "  ")
 			if oopsErr != nil {
-				zap.L().Sugar().Error("error marshalling error", zap.Error(oopsErr))
+				requestLogger.Error("error marshalling error", zap.Error(oopsErr))
 				w.Write([]byte(`{"error": {"message": "internal error"}}`))
 			} else {
 				w.Write(marshalled)
@@ -309,8 +320,6 @@ func (s *Server) readQueryRecordsHandler(namespace string, w http.ResponseWriter
 }
 
 func (s *Server) writeJSONLHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
-
 	const (
 		maxLines      = 100000
 		maxLineLength = 1024 * 1024
@@ -330,7 +339,7 @@ func (s *Server) writeJSONLHandler(namespace string, w http.ResponseWriter, r *h
 		}
 	}
 
-	response, err := s.db.InsertFlattenedRecords(ctx, namespace, lines)
+	response, err := s.db.InsertFlattenedRecords(r.Context(), namespace, lines)
 	if err != nil {
 		return err
 	}
