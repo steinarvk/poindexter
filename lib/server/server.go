@@ -137,16 +137,19 @@ type apiHandlerFunc func(namespace string, w http.ResponseWriter, r *http.Reques
 func (s *Server) Run() error {
 	r := mux.NewRouter()
 
-	r.Handle("/api/query/{ns}/records/", s.middleware(queryApiHandler{s.readQueryRecordsHandler}))
-	r.Handle("/api/query/{ns}/fields/", s.middleware(queryApiHandler{s.readQueryFieldsHandler}))
+	addHandler := func(pattern string, handler VerifyingApiHandler) {
+		h := s.middleware(handler)
+		h = otelhttp.NewHandler(h, pattern)
+		r.Handle(pattern, h)
+	}
 
-	r.Handle("/api/ingest/{ns}/record/", s.middleware(ingestApiHandler{s.writeSingleRecordHandler}))
-	r.Handle("/api/ingest/{ns}/jsonl/", s.middleware(ingestApiHandler{s.writeJSONLHandler}))
+	addHandler("/api/query/{ns}/records/", queryApiHandler{s.readQueryRecordsHandler})
+	addHandler("/api/query/{ns}/fields/", queryApiHandler{s.readQueryFieldsHandler})
 
-	var wrappedHandler http.Handler = r
-	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "poindexter-server")
+	addHandler("/api/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
+	addHandler("/api/ingest/{ns}/jsonl/", ingestApiHandler{s.writeJSONLHandler})
 
-	s.httpServer.Handler = wrappedHandler
+	s.httpServer.Handler = r
 
 	zap.L().Sugar().Infof("Server is running on %s", s.httpServer.Addr)
 
