@@ -3,15 +3,12 @@ package server
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
-	"runtime/debug"
 	"time"
 
 	"github.com/XSAM/otelsql"
@@ -19,6 +16,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/dexapi"
 	"github.com/steinarvk/poindexter/lib/dexerror"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
+	"github.com/steinarvk/poindexter/lib/version"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -395,78 +393,6 @@ func (e *CustomSpanExporter) Shutdown(ctx context.Context) error {
 	return e.delegate.Shutdown(ctx)
 }
 
-type VersionInfo struct {
-	CommitHash  string
-	CommitTime  string
-	DirtyCommit bool
-	BinaryHash  string
-}
-
-func (v VersionInfo) VersionString() string {
-	var rv string
-	if v.CommitHash != "" {
-		if v.DirtyCommit {
-			rv = fmt.Sprintf("%s-dirty", v.CommitHash[:16])
-		} else {
-			rv = v.CommitHash[:16]
-		}
-	}
-
-	if (rv == "" || v.DirtyCommit) && v.BinaryHash != "" {
-		if rv != "" {
-			rv += "@"
-		}
-		rv += fmt.Sprintf("sha256:%s", v.BinaryHash[:8])
-	}
-
-	return rv
-}
-
-func getVersionInfo(forceHash bool) (*VersionInfo, error) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return nil, errors.New("failed to read build info")
-	}
-
-	var rv VersionInfo
-
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			rv.CommitHash = setting.Value
-		}
-		if setting.Key == "vcs.modified" {
-			rv.DirtyCommit = setting.Value == "true"
-		}
-		if setting.Key == "vcs.time" {
-			rv.CommitTime = setting.Value
-		}
-	}
-
-	if rv.CommitHash == "" || rv.DirtyCommit || forceHash {
-		execPath, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-
-		file, err := os.Open(execPath)
-		if err != nil {
-			return nil, err
-		}
-		defer file.Close()
-
-		h := sha256.New()
-
-		if _, err := io.Copy(h, file); err != nil {
-			return nil, err
-		}
-
-		hexdigest := fmt.Sprintf("%x", h.Sum(nil))
-		rv.BinaryHash = hexdigest
-	}
-
-	return &rv, nil
-}
-
 func Main() error {
 	ctx := context.Background()
 
@@ -481,7 +407,7 @@ func Main() error {
 	undo := zap.ReplaceGlobals(logger)
 	defer undo()
 
-	info, err := getVersionInfo(false)
+	info, err := version.GetInfo()
 	if err != nil {
 		return err
 	}

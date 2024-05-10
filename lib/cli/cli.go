@@ -11,6 +11,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/server"
+	"github.com/steinarvk/poindexter/lib/version"
 	"go.uber.org/zap"
 )
 
@@ -53,6 +54,31 @@ func Main() {
 		Short: "Start the server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return server.Main()
+		},
+	}
+
+	var versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Show version information",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			info, err := version.GetInfo()
+			if err != nil {
+				return err
+			}
+
+			if info.CommitHash != "" {
+				dirtyFlag := ""
+				if info.DirtyCommit {
+					dirtyFlag = " (dirty)"
+				}
+				fmt.Printf("Commit:       %s%s\n", info.CommitHash, dirtyFlag)
+				fmt.Printf("Commit time:  %s\n", info.CommitTime)
+			}
+			if info.BinaryHash != "" {
+				fmt.Printf("Binary hash:  %s\n", info.BinaryHash)
+			}
+
+			return nil
 		},
 	}
 
@@ -304,6 +330,7 @@ func Main() {
 	serverCmd.AddCommand(createServerCmd, addClientCmd, grantAccessCmd)
 	adminCmd.AddCommand(listClients, statsCmd)
 	scratchCmd.AddCommand(syncSingleFileCmd, printTestQuerySQLCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
