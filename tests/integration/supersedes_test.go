@@ -93,7 +93,7 @@ func TestSupersededRecordsWithoutRespecting(t *testing.T) {
 	}
 }
 
-func TestSupersedingNonexistent(t *testing.T) {
+func TestSupersedingNonexistentFails(t *testing.T) {
 	if _, err := postRequest("api/write/record/", ExpectStatus(400), WithJSON(`
 		{
 			"id": "60fd20a1-cf39-4f98-af43-80c6361d4dd0",

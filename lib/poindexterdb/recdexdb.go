@@ -1200,8 +1200,16 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		}
 	}
 
-	if q.TimestampStart != nil || q.TimestampEnd != nil {
-		return fmt.Errorf("not yet supported (TODO): timestamp filter")
+	if q.TimestampStart != nil {
+		if err := qb.setTimestampStartFilterInclusive(*q.TimestampStart); err != nil {
+			return err
+		}
+	}
+
+	if q.TimestampEnd != nil {
+		if err := qb.setTimestampEndFilterExclusive(*q.TimestampEnd); err != nil {
+			return err
+		}
 	}
 
 	for _, key := range q.Filter.FieldsPresent {

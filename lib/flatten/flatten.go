@@ -132,6 +132,10 @@ func interpretIntAsTimestamp(value int64) (time.Time, error) {
 	return time.Time{}, errors.New("invalid timestamp")
 }
 
+func InterpretTimestamp(value interface{}) (time.Time, error) {
+	return interpretTimestamp(value)
+}
+
 func interpretTimestamp(value interface{}) (time.Time, error) {
 	allowedStringFormats := []string{
 		time.RFC3339Nano,

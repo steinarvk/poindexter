@@ -262,3 +262,23 @@ func (qb *queryBuilder) setOmitSuperseded() error {
 
 	return nil
 }
+
+func (qb *queryBuilder) setTimestampStartFilterInclusive(t time.Time) error {
+	arg := qb.addArg(t)
+
+	qb.whereClauses = append(qb.whereClauses,
+		"records.record_timestamp >= "+arg,
+	)
+
+	return nil
+}
+
+func (qb *queryBuilder) setTimestampEndFilterExclusive(t time.Time) error {
+	arg := qb.addArg(t)
+
+	qb.whereClauses = append(qb.whereClauses,
+		"records.record_timestamp < "+arg,
+	)
+
+	return nil
+}

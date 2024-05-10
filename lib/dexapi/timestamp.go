@@ -1,7 +1,10 @@
 package dexapi
 
 import (
+	"encoding/json"
 	"time"
+
+	"github.com/steinarvk/poindexter/lib/flatten"
 )
 
 type Timestamp struct {
@@ -17,10 +20,16 @@ func (t *Timestamp) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	tt, err := time.Parse(time.RFC3339, string(data))
+	var value interface{}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+
+	tt, err := flatten.InterpretTimestamp(value)
 	if err != nil {
 		return err
 	}
 	t.Value = tt
+
 	return nil
 }
