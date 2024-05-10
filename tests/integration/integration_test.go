@@ -28,7 +28,7 @@ func TestGetHTTP(t *testing.T) {
 func TestInsertAndQuery(t *testing.T) {
 	myUUID := uuid.New().String()
 
-	resp, err := postRequest("api/write/record/", WithJSON(map[string]interface{}{
+	resp, err := postRequest("api/write/main/record/", WithJSON(map[string]interface{}{
 		"id":        myUUID,
 		"timestamp": float64(time.Now().UnixNano()) / 1e9,
 		"message":   "hello",
@@ -41,7 +41,7 @@ func TestInsertAndQuery(t *testing.T) {
 	zap.L().Sugar().Infof("status %v", resp.Response.StatusCode)
 	zap.L().Sugar().Infof("response %v", resp.Body)
 
-	resp, err = postRequest("api/read/records/", WithJSON(map[string]interface{}{
+	resp, err = postRequest("api/read/main/records/", WithJSON(map[string]interface{}{
 		"filter": map[string]interface{}{
 			"testfield": myUUID,
 		},
@@ -56,7 +56,7 @@ func TestInsertAndQuery(t *testing.T) {
 }
 
 func testSetupRecords() error {
-	if _, err := postRequest("api/write/record/", WithJSON(`
+	if _, err := postRequest("api/write/main/record/", WithJSON(`
 		{
 			"id": "577255cd-d2b0-4ba5-abac-2373b8475801",
 			"timestamp": 1715316569,
@@ -66,7 +66,7 @@ func testSetupRecords() error {
 		return err
 	}
 
-	if _, err := postRequest("api/write/record/", WithJSON(map[string]interface{}{
+	if _, err := postRequest("api/write/main/record/", WithJSON(map[string]interface{}{
 		"id":        uuid.New().String(),
 		"timestamp": float64(time.Now().UnixNano()) / 1e9,
 		"category":  "initial-test-records",
@@ -81,7 +81,7 @@ func testSetupRecords() error {
 		return err
 	}
 
-	if _, err := postRequest("api/write/record/", WithJSON(map[string]interface{}{
+	if _, err := postRequest("api/write/main/record/", WithJSON(map[string]interface{}{
 		"id":        uuid.New().String(),
 		"timestamp": float64(time.Now().UnixNano()) / 1e9,
 		"category":  "initial-test-records",

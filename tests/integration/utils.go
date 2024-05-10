@@ -32,10 +32,9 @@ type requestOptions struct {
 
 func newDefaultRequestOptions() requestOptions {
 	return requestOptions{
-		host:      "http://localhost:15244/",
-		user:      "alice",
-		password:  testPasswordsByUsername["alice"],
-		namespace: "main",
+		host:     "http://localhost:15244/",
+		user:     "alice",
+		password: testPasswordsByUsername["alice"],
 	}
 }
 
@@ -165,7 +164,7 @@ func insertRecords(records []string) error {
 			return fmt.Errorf("insertRecords: JSON marshalling failed: %v\nOriginal JSON was: %s", err, record)
 		}
 
-		if _, err := postRequest("api/write/record/", WithJSON(string(marshalled))); err != nil {
+		if _, err := postRequest("api/write/main/record/", WithJSON(string(marshalled))); err != nil {
 			return err
 		}
 	}

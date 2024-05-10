@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/XSAM/otelsql"
+	"github.com/gorilla/mux"
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/dexapi"
 	"github.com/steinarvk/poindexter/lib/dexerror"
@@ -134,14 +135,15 @@ type apiHandlerFunc func(namespace string, w http.ResponseWriter, r *http.Reques
 
 // Run starts the server
 func (s *Server) Run() error {
-	mux := http.NewServeMux()
-	mux.Handle("/api/read/records/", s.middleware(readApiHandler{s.readQueryRecordsHandler}))
-	mux.Handle("/api/read/fields/", s.middleware(readApiHandler{s.readQueryFieldsHandler}))
+	r := mux.NewRouter()
 
-	mux.Handle("/api/write/record/", s.middleware(writeApiHandler{s.writeSingleRecordHandler}))
-	mux.Handle("/api/write/jsonl/", s.middleware(writeApiHandler{s.writeJSONLHandler}))
+	r.Handle("/api/read/{ns}/records/", s.middleware(readApiHandler{s.readQueryRecordsHandler}))
+	r.Handle("/api/read/{ns}/fields/", s.middleware(readApiHandler{s.readQueryFieldsHandler}))
 
-	var wrappedHandler http.Handler = mux
+	r.Handle("/api/write/{ns}/record/", s.middleware(writeApiHandler{s.writeSingleRecordHandler}))
+	r.Handle("/api/write/{ns}/jsonl/", s.middleware(writeApiHandler{s.writeJSONLHandler}))
+
+	var wrappedHandler http.Handler = r
 	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "poindexter-server")
 
 	s.httpServer.Handler = wrappedHandler
@@ -211,7 +213,12 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 			}
 		}
 
-		namespace := r.Header.Get("X-Namespace")
+		pathVars := mux.Vars(r)
+		namespace, ok := pathVars["ns"]
+		if !ok {
+			writeJSONError(w, "missing namespace", http.StatusBadRequest)
+			return
+		}
 
 		serveUnauthorized := func() {
 			zap.L().Sugar().Infof("rejecting access to user %q to namespace %q", username, namespace)
