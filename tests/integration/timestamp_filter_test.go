@@ -1,41 +1,8 @@
 package integrationtest
 
 import (
-	"encoding/json"
-	"fmt"
 	"testing"
-	"time"
-
-	"github.com/google/uuid"
 )
-
-func insertRecords(records []string) error {
-	for _, record := range records {
-		var unmarshalled map[string]interface{}
-
-		if err := json.Unmarshal([]byte(record), &unmarshalled); err != nil {
-			return fmt.Errorf("insertRecords: JSON provided as string is invalid: %v\nJSON provided as string was: %s", err, record)
-		}
-
-		if _, ok := unmarshalled["timestamp"]; !ok {
-			unmarshalled["timestamp"] = float64(time.Now().UnixNano()) / 1e9
-		}
-
-		if _, ok := unmarshalled["id"]; !ok {
-			unmarshalled["id"] = uuid.New().String()
-		}
-
-		marshalled, err := json.Marshal(unmarshalled)
-		if err != nil {
-			return fmt.Errorf("insertRecords: JSON marshalling failed: %v\nOriginal JSON was: %s", err, record)
-		}
-
-		if _, err := postRequest("api/write/record/", WithJSON(string(marshalled))); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 func TestTimestampFilter(t *testing.T) {
 	if err := insertRecords([]string{
