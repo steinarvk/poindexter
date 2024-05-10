@@ -25,7 +25,7 @@ func TestTimestampFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := postRequest("api/read/main/records/", WithJSON(`
+	resp, err := postRequest("api/query/main/records/", WithJSON(`
 		{
 			"filter": {
 				"category": "timestamp-filter"
@@ -41,7 +41,7 @@ func TestTimestampFilter(t *testing.T) {
 		t.Fatalf("expected 3 records, got %d", len(records))
 	}
 
-	resp, err = postRequest("api/read/main/records/", WithJSON(`
+	resp, err = postRequest("api/query/main/records/", WithJSON(`
 		{
 			"filter": {
 				"category": "timestamp-filter"
@@ -59,7 +59,7 @@ func TestTimestampFilter(t *testing.T) {
 		t.Fatalf("expected 3 records, got %d", len(records))
 	}
 
-	resp, err = postRequest("api/read/main/records/", WithJSON(`
+	resp, err = postRequest("api/query/main/records/", WithJSON(`
 		{
 			"filter": {
 				"category": "timestamp-filter"

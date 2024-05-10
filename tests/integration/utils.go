@@ -164,7 +164,7 @@ func insertRecords(records []string) error {
 			return fmt.Errorf("insertRecords: JSON marshalling failed: %v\nOriginal JSON was: %s", err, record)
 		}
 
-		if _, err := postRequest("api/write/main/record/", WithJSON(string(marshalled))); err != nil {
+		if _, err := postRequest("api/ingest/main/record/", WithJSON(string(marshalled))); err != nil {
 			return err
 		}
 	}

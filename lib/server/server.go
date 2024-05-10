@@ -137,11 +137,11 @@ type apiHandlerFunc func(namespace string, w http.ResponseWriter, r *http.Reques
 func (s *Server) Run() error {
 	r := mux.NewRouter()
 
-	r.Handle("/api/read/{ns}/records/", s.middleware(readApiHandler{s.readQueryRecordsHandler}))
-	r.Handle("/api/read/{ns}/fields/", s.middleware(readApiHandler{s.readQueryFieldsHandler}))
+	r.Handle("/api/query/{ns}/records/", s.middleware(queryApiHandler{s.readQueryRecordsHandler}))
+	r.Handle("/api/query/{ns}/fields/", s.middleware(queryApiHandler{s.readQueryFieldsHandler}))
 
-	r.Handle("/api/write/{ns}/record/", s.middleware(writeApiHandler{s.writeSingleRecordHandler}))
-	r.Handle("/api/write/{ns}/jsonl/", s.middleware(writeApiHandler{s.writeJSONLHandler}))
+	r.Handle("/api/ingest/{ns}/record/", s.middleware(ingestApiHandler{s.writeSingleRecordHandler}))
+	r.Handle("/api/ingest/{ns}/jsonl/", s.middleware(ingestApiHandler{s.writeJSONLHandler}))
 
 	var wrappedHandler http.Handler = r
 	wrappedHandler = otelhttp.NewHandler(wrappedHandler, "poindexter-server")
@@ -161,12 +161,12 @@ type VerifyingApiHandler interface {
 	CheckAndServeHTTP(access config.AccessLevel, namespace string, w http.ResponseWriter, r *http.Request) error
 }
 
-type readApiHandler struct {
+type queryApiHandler struct {
 	handler apiHandlerFunc
 }
 
-func (v readApiHandler) CheckAndServeHTTP(access config.AccessLevel, namespace string, w http.ResponseWriter, r *http.Request) error {
-	if !access.ReadAccess {
+func (v queryApiHandler) CheckAndServeHTTP(access config.AccessLevel, namespace string, w http.ResponseWriter, r *http.Request) error {
+	if !access.QueryAccess {
 		return errUnauthorized
 	}
 
@@ -177,12 +177,12 @@ var (
 	errUnauthorized = errors.New("unauthorized")
 )
 
-type writeApiHandler struct {
+type ingestApiHandler struct {
 	handler apiHandlerFunc
 }
 
-func (v writeApiHandler) CheckAndServeHTTP(access config.AccessLevel, namespace string, w http.ResponseWriter, r *http.Request) error {
-	if !access.WriteAccess {
+func (v ingestApiHandler) CheckAndServeHTTP(access config.AccessLevel, namespace string, w http.ResponseWriter, r *http.Request) error {
+	if !access.IngestAccess {
 		return errUnauthorized
 	}
 

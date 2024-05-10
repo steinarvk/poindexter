@@ -57,8 +57,8 @@ type Client struct {
 }
 
 type AccessLevel struct {
-	ReadAccess  bool `yaml:"read_access"`
-	WriteAccess bool `yaml:"write_access"`
+	QueryAccess  bool `yaml:"query_access"`
+	IngestAccess bool `yaml:"ingest_access"`
 }
 
 func (c Config) Validate() error {
@@ -88,7 +88,7 @@ func (c Config) Validate() error {
 				return fmt.Errorf("client %q has access to unknown namespace %q", username, ns)
 			}
 
-			if !access.ReadAccess && !access.WriteAccess {
+			if !access.QueryAccess && !access.IngestAccess {
 				return fmt.Errorf("client %q has no access to namespace %q", username, ns)
 			}
 		}

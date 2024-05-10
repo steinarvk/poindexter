@@ -10,7 +10,7 @@ import (
 )
 
 func TestSupersededRecords(t *testing.T) {
-	if _, err := postRequest("api/write/main/record/", WithJSON(`
+	if _, err := postRequest("api/ingest/main/record/", WithJSON(`
 		{
 			"id": "914452d1-4e23-480d-8034-6b52f6a970e8",
 			"timestamp": 1715316569,
@@ -21,7 +21,7 @@ func TestSupersededRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := postRequest("api/write/main/record/", WithJSON(`
+	if _, err := postRequest("api/ingest/main/record/", WithJSON(`
 		{
 			"id": "11a95a34-135d-48e1-b4c7-356333424337",
 			"supersedes_id": "914452d1-4e23-480d-8034-6b52f6a970e8",
@@ -33,7 +33,7 @@ func TestSupersededRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := postRequest("api/read/main/records/", WithJSON(`
+	resp, err := postRequest("api/query/main/records/", WithJSON(`
 		{
 			"filter": {
 				"category": "supersedes-test-records"
@@ -59,7 +59,7 @@ func TestSupersededRecords(t *testing.T) {
 	}
 }
 func TestSupersededRecordsWithoutRespecting(t *testing.T) {
-	if _, err := postRequest("api/write/main/record/", WithJSON(`
+	if _, err := postRequest("api/ingest/main/record/", WithJSON(`
 		{
 			"id": "7a3bb522-7abe-491b-abfc-9d8192dfdcb0",
 			"timestamp": 1715316569,
@@ -70,7 +70,7 @@ func TestSupersededRecordsWithoutRespecting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := postRequest("api/write/main/record/", WithJSON(`
+	if _, err := postRequest("api/ingest/main/record/", WithJSON(`
 		{
 			"id": "c9f9ccb0-5544-477f-85be-e35bd51059ba",
 			"supersedes_id": "7a3bb522-7abe-491b-abfc-9d8192dfdcb0",
@@ -82,7 +82,7 @@ func TestSupersededRecordsWithoutRespecting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := postRequest("api/read/main/records/", WithJSON(`
+	resp, err := postRequest("api/query/main/records/", WithJSON(`
 		{
 			"filter": {
 				"category": "supersedes-test-records-without-respect"
@@ -101,7 +101,7 @@ func TestSupersededRecordsWithoutRespecting(t *testing.T) {
 }
 
 func TestSupersedingNonexistentFails(t *testing.T) {
-	resp, err := postRequest("api/write/main/record/", ExpectStatus(400), WithJSON(`
+	resp, err := postRequest("api/ingest/main/record/", ExpectStatus(400), WithJSON(`
 		{
 			"id": "60fd20a1-cf39-4f98-af43-80c6361d4dd0",
 			"timestamp": 1715316569,

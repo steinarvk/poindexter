@@ -5,5 +5,5 @@ clients:
     shared_secret: "hunter2hunter2hunter2hunter2hunter2hunter2hunter2hunter2hunter2hunter2"
     access:
       main:
-        read_access: true
-        write_access: true
+        query_access: true
+        ingest_access: true
