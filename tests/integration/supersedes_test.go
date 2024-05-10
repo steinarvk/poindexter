@@ -2,11 +2,11 @@ package integrationtest
 
 import (
 	"encoding/json"
-	"log"
 	"strings"
 	"testing"
 
 	"github.com/steinarvk/poindexter/lib/dexapi"
+	"go.uber.org/zap"
 )
 
 func TestSupersededRecords(t *testing.T) {
@@ -112,7 +112,7 @@ func TestSupersedingNonexistentFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	log.Printf("error response was: %v", string(resp.RawBody))
+	zap.L().Sugar().Infof("error response was: %v", string(resp.RawBody))
 
 	var errorResp dexapi.ErrorResponse
 	if err := json.Unmarshal(resp.RawBody, &errorResp); err != nil {

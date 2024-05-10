@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 var (
@@ -122,7 +122,7 @@ func postRequest(endpoint string, opts ...RequestOption) (*Response, error) {
 		}
 	}
 
-	log.Printf("==> POST %v [%v %v] %v", url, resp.StatusCode, responseContentType, duration)
+	zap.L().Sugar().Infof("==> POST %v [%v %v] %v", url, resp.StatusCode, responseContentType, duration)
 
 	if reqOpts.expectStatusCode != 0 && resp.StatusCode != reqOpts.expectStatusCode {
 		return nil, fmt.Errorf("unexpected status code %v (wanted %v)\nresponse body:\n%s", resp.StatusCode, reqOpts.expectStatusCode, (responseBody))

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sort"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/dexapi"
 	"github.com/steinarvk/poindexter/lib/dexerror"
 	"github.com/steinarvk/poindexter/lib/flatten"
+	"go.uber.org/zap"
 )
 
 type Namespace int
@@ -246,7 +246,7 @@ func (d *DB) prepopulateNamespaceCache(ctx context.Context) error {
 	d.caches.namespaceCache = namespaceMap
 
 	if d.options.isVerbose(2) {
-		log.Printf("prepopulated namespace map: %v", namespaceMap)
+		zap.L().Sugar().Infof("prepopulated namespace map: %v", namespaceMap)
 	}
 
 	success = true
@@ -364,12 +364,12 @@ func summarize(result []InsertionResult) *BatchInsertionResult {
 
 func (d *DB) insertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, recordEntries []indexedFlattenedEntry) ([]InsertionResult, error) {
 	if d.options.isVerbose(10) {
-		log.Printf("insertFlattenedRecordsInBatch: %d records", len(recordEntries))
+		zap.L().Sugar().Infof("insertFlattenedRecordsInBatch: %d records", len(recordEntries))
 	}
 
 	result, err := d.internalInsertFlattenedRecordsInBatch(ctx, nsid, recordEntries)
 	if d.options.isVerbose(10) {
-		log.Printf("insertFlattenedRecordsInBatch: %+v %v", summarize(result).Summary, err)
+		zap.L().Sugar().Infof("insertFlattenedRecordsInBatch: %+v %v", summarize(result).Summary, err)
 	}
 
 	return result, err
@@ -483,7 +483,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		}
 
 		if d.options.isVerbose(10) {
-			log.Printf("record %v is a duplicate", recordID)
+			zap.L().Sugar().Infof("record %v is a duplicate", recordID)
 		}
 
 		results = append(results, InsertionResult{
@@ -515,7 +515,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		}
 
 		if d.options.isVerbose(10) {
-			log.Printf("record %v was successfully inserted", record.RecordUUID)
+			zap.L().Sugar().Infof("record %v was successfully inserted", record.RecordUUID)
 		}
 		results = append(results, InsertionResult{
 			Index:      indexByUUID[record.RecordUUID],
@@ -594,7 +594,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 	success = true
 
 	if d.options.isVerbose(2) {
-		log.Printf("%d/%d records were new; inserted %d records and %d index entries after %v", len(toInsertRecordIDs), len(recordEntries), numInsertedRecords, numIndexEntriesInserted, time.Since(t0))
+		zap.L().Sugar().Infof("%d/%d records were new; inserted %d records and %d index entries after %v", len(toInsertRecordIDs), len(recordEntries), numInsertedRecords, numIndexEntriesInserted, time.Since(t0))
 	}
 
 	return results, nil
@@ -629,7 +629,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 		sqlDriverName = "postgres"
 	}
 
-	log.Printf("using driver name: %q", sqlDriverName)
+	zap.L().Sugar().Infof("using driver name: %q", sqlDriverName)
 
 	rawDB, err := sql.Open(sqlDriverName, connStr)
 	if err != nil {
@@ -637,7 +637,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 	}
 
 	if params.Verbosity > 1 {
-		log.Printf("connected to database")
+		zap.L().Sugar().Infof("connected to database")
 	}
 
 	nonsensitiveOptions := nonsensitiveOptions{
@@ -653,7 +653,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 	}
 
 	if params.Verbosity > 0 {
-		log.Printf("configuration: %s", opts.describeOptionsForLogging())
+		zap.L().Sugar().Infof("configuration: %s", opts.describeOptionsForLogging())
 	}
 
 	db := &DB{
@@ -664,7 +664,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 
 	if !opts.nonsensitiveOptions.disableAutoMigrate {
 		if params.Verbosity > 1 {
-			log.Printf("running migrations")
+			zap.L().Sugar().Infof("running migrations")
 		}
 
 		if err := db.runMigrations(); err != nil {
@@ -673,7 +673,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 	}
 
 	if params.Verbosity > 1 {
-		log.Printf("prepopulating namespace cache")
+		zap.L().Sugar().Infof("prepopulating namespace cache")
 	}
 
 	if err := db.prepopulateNamespaceCache(ctx); err != nil {
@@ -681,7 +681,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 	}
 
 	if params.Verbosity > 1 {
-		log.Printf("poindexterdb ready")
+		zap.L().Sugar().Infof("poindexterdb ready")
 	}
 
 	return db, nil
@@ -709,7 +709,7 @@ func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputC
 
 	flattenSerializedWorker := func(ctx context.Context, workerno int) error {
 		if d.options.isVerbose(10) {
-			log.Printf("insertSerializedRecords: starting flattenSerializedWorker %d", workerno)
+			zap.L().Sugar().Infof("insertSerializedRecords: starting flattenSerializedWorker %d", workerno)
 		}
 
 		for entry := range inputCh {
@@ -720,7 +720,7 @@ func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputC
 			record, err := flattener.FlattenJSON([]byte(entry.line))
 			if err != nil {
 				if d.options.isVerbose(10) {
-					log.Printf("record #%d was invalid (%v)", entry.index, err)
+					zap.L().Sugar().Infof("record #%d was invalid (%v)", entry.index, err)
 				}
 				outCh <- InsertionResult{
 					Index:      entry.index,
@@ -739,7 +739,7 @@ func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputC
 		}
 
 		if d.options.isVerbose(10) {
-			log.Printf("insertSerializedRecords: flattenSerializedWorker %d finished", workerno)
+			zap.L().Sugar().Infof("insertSerializedRecords: flattenSerializedWorker %d finished", workerno)
 		}
 
 		return nil
@@ -775,23 +775,23 @@ func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputC
 	flatteningResult := make(chan error, 1)
 	go func() {
 		if d.options.isVerbose(10) {
-			log.Printf("insertSerializedRecords: spawning insertFlattenedRecords")
+			zap.L().Sugar().Infof("insertSerializedRecords: spawning insertFlattenedRecords")
 		}
 		flatteningResult <- d.insertFlattenedRecords(ctx, nsid, flattenedCh, outCh)
 		if d.options.isVerbose(10) {
-			log.Printf("insertSerializedRecords: done with insertFlattenedRecords")
+			zap.L().Sugar().Infof("insertSerializedRecords: done with insertFlattenedRecords")
 		}
 		close(flatteningResult)
 	}()
 
 	if d.options.isVerbose(10) {
-		log.Printf("insertSerializedRecords: waiting for errors")
+		zap.L().Sugar().Infof("insertSerializedRecords: waiting for errors")
 	}
 
 	for err := range backgroundErrors {
 		if err != nil {
 			if d.options.isVerbose(2) {
-				log.Printf("insertSerializedRecords: cancelling due to error: %v", err)
+				zap.L().Sugar().Infof("insertSerializedRecords: cancelling due to error: %v", err)
 			}
 			cancel(err)
 			return err
@@ -799,7 +799,7 @@ func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputC
 	}
 
 	if d.options.isVerbose(10) {
-		log.Printf("insertSerializedRecords: waiting for flatteningResult")
+		zap.L().Sugar().Infof("insertSerializedRecords: waiting for flatteningResult")
 	}
 
 	if err := <-flatteningResult; err != nil {
@@ -807,7 +807,7 @@ func (d *DB) insertSerializedRecords(ctx context.Context, nsid Namespace, inputC
 	}
 
 	if d.options.isVerbose(10) {
-		log.Printf("insertSerializedRecords: all done")
+		zap.L().Sugar().Infof("insertSerializedRecords: all done")
 	}
 
 	return nil
@@ -824,7 +824,7 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 	batchingWorker := func() error {
 		defer func() {
 			if d.options.isVerbose(10) {
-				log.Printf("batchingWorker done")
+				zap.L().Sugar().Infof("batchingWorker done")
 			}
 			close(batchedCh)
 		}()
@@ -856,7 +856,7 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 			}
 
 			if d.options.isVerbose(10) {
-				log.Printf("insertionWorker %d starting unit of work", workerno)
+				zap.L().Sugar().Infof("insertionWorker %d starting unit of work", workerno)
 			}
 
 			results, err := d.insertFlattenedRecordsInBatch(ctx, nsid, batch)
@@ -868,19 +868,19 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 			}
 			for _, result := range results {
 				if d.options.isVerbose(100) {
-					log.Printf("insertionWorker %d trying to send result", workerno)
+					zap.L().Sugar().Infof("insertionWorker %d trying to send result", workerno)
 				}
 				outCh <- result
 				if d.options.isVerbose(100) {
-					log.Printf("insertionWorker %d sent result", workerno)
+					zap.L().Sugar().Infof("insertionWorker %d sent result", workerno)
 				}
 			}
 			if d.options.isVerbose(10) {
-				log.Printf("insertionWorker %d sent result", workerno)
+				zap.L().Sugar().Infof("insertionWorker %d sent result", workerno)
 			}
 		}
 		if d.options.isVerbose(10) {
-			log.Printf("insertionWorker %d done processing batches", workerno)
+			zap.L().Sugar().Infof("insertionWorker %d done processing batches", workerno)
 		}
 		return nil
 	}
@@ -898,7 +898,7 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 			defer func() {
 				wg.Done()
 				if d.options.isVerbose(10) {
-					log.Printf("insertionWorker %d done", workerno)
+					zap.L().Sugar().Infof("insertionWorker %d done", workerno)
 				}
 			}()
 
@@ -910,17 +910,17 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 
 	go func() {
 		if d.options.isVerbose(10) {
-			log.Printf("waiting for insertionWorkers")
+			zap.L().Sugar().Infof("waiting for insertionWorkers")
 		}
 		wg.Wait()
 		if d.options.isVerbose(10) {
-			log.Printf("done waiting for insertionWorkers; closing channels")
+			zap.L().Sugar().Infof("done waiting for insertionWorkers; closing channels")
 		}
 		close(backgroundErrors)
 	}()
 
 	if d.options.isVerbose(10) {
-		log.Printf("insertFlattenedRecords: starting batchingWorker")
+		zap.L().Sugar().Infof("insertFlattenedRecords: starting batchingWorker")
 	}
 
 	if err := batchingWorker(); err != nil {
@@ -928,13 +928,13 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 	}
 
 	if d.options.isVerbose(10) {
-		log.Printf("insertFlattenedRecords: waiting for errors")
+		zap.L().Sugar().Infof("insertFlattenedRecords: waiting for errors")
 	}
 
 	for err := range backgroundErrors {
 		if err != nil {
 			if d.options.isVerbose(2) {
-				log.Printf("insertFlattenedRecords: cancelling due to error: %v", err)
+				zap.L().Sugar().Infof("insertFlattenedRecords: cancelling due to error: %v", err)
 			}
 			cancel(err)
 			return err
@@ -942,7 +942,7 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 	}
 
 	if d.options.isVerbose(10) {
-		log.Printf("insertFlattenedRecords: all done")
+		zap.L().Sugar().Infof("insertFlattenedRecords: all done")
 	}
 
 	return nil
@@ -1128,11 +1128,11 @@ func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, l
 
 	go func() {
 		if d.options.isVerbose(10) {
-			log.Printf("InsertFlattenedRecords: spawning insertSerializedRecords")
+			zap.L().Sugar().Infof("InsertFlattenedRecords: spawning insertSerializedRecords")
 		}
 		bgErr <- d.insertSerializedRecords(ctx, nsid, indexedEntries, results)
 		if d.options.isVerbose(10) {
-			log.Printf("InsertFlattenedRecords: done with insertSerializedRecords")
+			zap.L().Sugar().Infof("InsertFlattenedRecords: done with insertSerializedRecords")
 		}
 		close(bgErr)
 		close(results)
@@ -1140,16 +1140,16 @@ func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, l
 
 	var result []InsertionResult
 	if d.options.isVerbose(10) {
-		log.Printf("starting to consume results")
+		zap.L().Sugar().Infof("starting to consume results")
 	}
 	for r := range results {
 		if d.options.isVerbose(10) {
-			log.Printf("received result; now %d", len(result))
+			zap.L().Sugar().Infof("received result; now %d", len(result))
 		}
 		result = append(result, r)
 	}
 	if d.options.isVerbose(10) {
-		log.Printf("done receiving results")
+		zap.L().Sugar().Infof("done receiving results")
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Index < result[j].Index
@@ -1160,7 +1160,7 @@ func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, l
 	}
 
 	if d.options.isVerbose(10) {
-		log.Printf("InsertFlattenedRecords: all done; received %d results", len(result))
+		zap.L().Sugar().Infof("InsertFlattenedRecords: all done; received %d results", len(result))
 	}
 
 	if len(result) != len(lines) {
@@ -1175,7 +1175,7 @@ func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, l
 		duration := time.Since(t0)
 		processedRate := float64(numProcessed) / duration.Seconds()
 		insertedRate := float64(numInserted) / duration.Seconds()
-		log.Printf("inserted %d/%d records in %v (%.2f/s processed, %.2f/s inserted)", numInserted, numProcessed, duration, processedRate, insertedRate)
+		zap.L().Sugar().Infof("inserted %d/%d records in %v (%.2f/s processed, %.2f/s inserted)", numInserted, numProcessed, duration, processedRate, insertedRate)
 	}
 
 	return summary, nil
@@ -1270,7 +1270,7 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		return err
 	}
 
-	log.Printf("executing query with arguments %v: query %s", queryArgs, queryString)
+	zap.L().Sugar().Infof("executing query with arguments %v: query %s", queryArgs, queryString)
 
 	executeQueryTwiceAndExplain := opts.debug
 	if executeQueryTwiceAndExplain {
@@ -1283,7 +1283,7 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 			if err := rows.Scan(&explainLine); err != nil {
 				return err
 			}
-			log.Printf("explain analyze: %s", explainLine)
+			zap.L().Sugar().Infof("explain analyze: %s", explainLine)
 		}
 
 		rows.Close()

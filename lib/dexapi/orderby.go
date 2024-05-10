@@ -3,7 +3,8 @@ package dexapi
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+
+	"go.uber.org/zap"
 )
 
 type OrderByVariant string
@@ -30,7 +31,7 @@ func (o *OrderBy) MarshalJSON() ([]byte, error) {
 
 func (o *OrderBy) UnmarshalJSON(data []byte) error {
 	s := string(data)
-	log.Printf("unmarshalling order-by: %q", s)
+	zap.L().Sugar().Infof("unmarshalling order-by: %q", s)
 	if len(data) == 0 || s == "null" {
 		return nil
 	}

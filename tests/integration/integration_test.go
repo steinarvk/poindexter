@@ -14,6 +14,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/server"
+	"go.uber.org/zap"
 )
 
 func TestGetHTTP(t *testing.T) {
@@ -21,7 +22,7 @@ func TestGetHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log.Printf("status %v", resp.StatusCode)
+	zap.L().Sugar().Infof("status %v", resp.StatusCode)
 }
 
 func TestInsertAndQuery(t *testing.T) {
@@ -37,8 +38,8 @@ func TestInsertAndQuery(t *testing.T) {
 		t.Fatalf("postRequest error: %v", err)
 	}
 
-	log.Printf("status %v", resp.Response.StatusCode)
-	log.Printf("response %v", resp.Body)
+	zap.L().Sugar().Infof("status %v", resp.Response.StatusCode)
+	zap.L().Sugar().Infof("response %v", resp.Body)
 
 	resp, err = postRequest("api/read/records/", WithJSON(map[string]interface{}{
 		"filter": map[string]interface{}{
@@ -50,8 +51,8 @@ func TestInsertAndQuery(t *testing.T) {
 		t.Fatalf("postRequest error: %v", err)
 	}
 
-	log.Printf("status %v", resp.Response.StatusCode)
-	log.Printf("response %v", resp.Body)
+	zap.L().Sugar().Infof("status %v", resp.Response.StatusCode)
+	zap.L().Sugar().Infof("response %v", resp.Body)
 }
 
 func testSetupRecords() error {

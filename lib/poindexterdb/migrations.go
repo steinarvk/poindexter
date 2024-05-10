@@ -3,11 +3,11 @@ package poindexterdb
 import (
 	"embed"
 	"fmt"
-	"log"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"go.uber.org/zap"
 )
 
 //go:embed migrations/*.sql
@@ -31,24 +31,24 @@ func (d *DB) runMigrations() error {
 
 	if d.options.isVerbose(1) {
 		version, dirty, err := m.Version()
-		log.Printf("Current version: %d, dirty: %v, err: %v", version, dirty, err)
+		zap.L().Sugar().Infof("Current version: %d, dirty: %v, err: %v", version, dirty, err)
 	}
 
 	if err := m.Up(); err != nil {
 		if err == migrate.ErrNoChange {
 			if d.options.isVerbose(2) {
-				log.Printf("No migrations to run")
+				zap.L().Sugar().Infof("No migrations to run")
 			}
 			return nil
 		}
 		return fmt.Errorf("unable to run migrations: %w", err)
 	} else {
 		if d.options.isVerbose(2) {
-			log.Printf("Migrations run successfully")
+			zap.L().Sugar().Infof("Migrations run successfully")
 
 			version, dirty, err := m.Version()
 
-			log.Printf("Current version: %d, dirty: %v, err: %v", version, dirty, err)
+			zap.L().Sugar().Infof("Current version: %d, dirty: %v, err: %v", version, dirty, err)
 		}
 	}
 

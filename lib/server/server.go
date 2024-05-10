@@ -20,6 +20,8 @@ import (
 	"github.com/steinarvk/poindexter/lib/dexerror"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -145,7 +147,7 @@ func (s *Server) Run() error {
 
 	s.httpServer.Handler = wrappedHandler
 
-	fmt.Printf("Server is running on %s\n", s.httpServer.Addr)
+	zap.L().Sugar().Infof("Server is running on %s", s.httpServer.Addr)
 
 	return s.httpServer.ListenAndServe()
 }
@@ -203,7 +205,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 		namespace := r.Header.Get("X-Namespace")
 
 		serveUnauthorized := func() {
-			log.Printf("rejecting access to user %q to namespace %q", username, namespace)
+			zap.L().Sugar().Infof("rejecting access to user %q to namespace %q", username, namespace)
 
 			leftUntilSecond := time.Until(t0.Add(time.Second))
 			time.Sleep(leftUntilSecond)
@@ -226,7 +228,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 			return
 		}
 
-		log.Printf("checked access for user %q to namespace %q: %+v", username, namespace, accessLevel)
+		zap.L().Sugar().Infof("checked access for user %q to namespace %q: %+v", username, namespace, accessLevel)
 
 		if err := next.CheckAndServeHTTP(accessLevel, namespace, w, r); err != nil {
 			if err == errUnauthorized {
@@ -236,11 +238,9 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 			apiErr := dexerror.AsPoindexterError(err)
 
-			log.Printf(
-				"error[%v]: %v [%v]",
-				apiErr.InternalErrorDetail().ErrorID,
-				apiErr.PublicErrorDetail().Message,
-				apiErr.InternalErrorDetail().Message,
+			zap.L().Error(
+				apiErr.InternalErrorMessage(),
+				apiErr.InternalZapFields()...,
 			)
 			response := dexapi.ErrorResponse{
 				Error: apiErr.PublicErrorDetail(),
@@ -251,7 +251,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 			marshalled, oopsErr := json.MarshalIndent(response, "", "  ")
 			if oopsErr != nil {
-				log.Printf("error marshalling error: %v", oopsErr)
+				zap.L().Sugar().Error("error marshalling error", zap.Error(oopsErr))
 				w.Write([]byte(`{"error": {"message": "internal error"}}`))
 			} else {
 				w.Write(marshalled)
@@ -406,9 +406,9 @@ func (v VersionInfo) VersionString() string {
 	var rv string
 	if v.CommitHash != "" {
 		if v.DirtyCommit {
-			rv = fmt.Sprintf("git:%s-dirty", v.CommitHash)
+			rv = fmt.Sprintf("%s-dirty", v.CommitHash[:16])
 		} else {
-			rv = fmt.Sprintf("git:%s", v.CommitHash)
+			rv = v.CommitHash[:16]
 		}
 	}
 
@@ -416,7 +416,7 @@ func (v VersionInfo) VersionString() string {
 		if rv != "" {
 			rv += "@"
 		}
-		rv += fmt.Sprintf("sha256:%s", v.BinaryHash)
+		rv += fmt.Sprintf("sha256:%s", v.BinaryHash[:8])
 	}
 
 	return rv
@@ -461,7 +461,7 @@ func getVersionInfo(forceHash bool) (*VersionInfo, error) {
 		}
 
 		hexdigest := fmt.Sprintf("%x", h.Sum(nil))
-		rv.BinaryHash = hexdigest[:8]
+		rv.BinaryHash = hexdigest
 	}
 
 	return &rv, nil
@@ -470,10 +470,29 @@ func getVersionInfo(forceHash bool) (*VersionInfo, error) {
 func Main() error {
 	ctx := context.Background()
 
+	zapconfig := zap.NewDevelopmentConfig()
+	zapconfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	logger, err := zapconfig.Build()
+	if err != nil {
+		return err
+	}
+	defer logger.Sync()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
+
 	info, err := getVersionInfo(false)
 	if err != nil {
 		return err
 	}
+
+	zap.L().Info("Starting poindexter server",
+		zap.String("version", info.VersionString()),
+		zap.String("git_commit", info.CommitHash),
+		zap.Bool("git_dirty", info.DirtyCommit),
+		zap.String("binary_hash", info.BinaryHash),
+		zap.String("build_time", info.CommitTime),
+	)
 
 	postgresCreds := poindexterdb.PostgresConfig{
 		PostgresHost: os.Getenv("PGHOST"),
@@ -488,8 +507,6 @@ func Main() error {
 		semconv.HostNameKey.String(os.Getenv("HOSTNAME")),
 		attribute.String("database.name", postgresCreds.PostgresDB),
 	}
-
-	log.Printf("Version: %s", info.VersionString())
 
 	configValue := os.Getenv("POINDEXTER_CONFIG")
 	if configValue == "" {

@@ -3,12 +3,12 @@ package poindexterdb
 import (
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/steinarvk/poindexter/lib/dexapi"
+	"go.uber.org/zap"
 )
 
 type queryBuilder struct {
@@ -224,7 +224,7 @@ func (qb *queryBuilder) setOrderBy(orderBy dexapi.OrderBy) error {
 	var prefix string
 	suffix := "ASC"
 
-	log.Printf("setting orderby: %+v", orderBy)
+	zap.L().Sugar().Infof("setting orderby: %+v", orderBy)
 
 	if orderBy.Descending {
 		suffix = "DESC"

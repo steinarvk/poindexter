@@ -1,8 +1,9 @@
 package integrationtest
 
 import (
-	"log"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 func TestQueryRecord(t *testing.T) {
@@ -56,7 +57,7 @@ func TestWriteRecordsJSONL(t *testing.T) {
 		t.Fatalf("postRequest error: %v", err)
 	}
 
-	log.Printf("raw response body: %v", string(resp.RawBody))
+	zap.L().Sugar().Infof("raw response body: %v", string(resp.RawBody))
 
 	// TODO: the response here needs a proper API type, which should then be tested.
 }

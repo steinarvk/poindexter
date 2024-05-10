@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/server"
+	"go.uber.org/zap"
 )
 
 func readLinesFromFile(filename string, maxLineLength int) ([]string, error) {
@@ -23,7 +23,7 @@ func readLinesFromFile(filename string, maxLineLength int) ([]string, error) {
 
 	scanner := bufio.NewScanner(f)
 
-	log.Printf("scanning %q with max line length %d", filename, maxLineLength)
+	zap.L().Sugar().Infof("scanning %q with max line length %d", filename, maxLineLength)
 
 	// Handle longer lines
 	buf := make([]byte, maxLineLength)
@@ -265,7 +265,7 @@ func Main() {
 					totalTimeSoFar := time.Since(t00)
 					processingRateSoFar := float64(totalProcessed) / totalTimeSoFar.Seconds()
 					estimatedTimeToProcessFile := float64(len(lines)) / processingRateSoFar
-					log.Printf("processing rate so far: %.2f/sec estimated time to process file %q: %.2fs", processingRateSoFar, filename, estimatedTimeToProcessFile)
+					zap.L().Sugar().Infof("processing rate so far: %.2f/sec estimated time to process file %q: %.2fs", processingRateSoFar, filename, estimatedTimeToProcessFile)
 				}
 
 				result, err := db.InsertFlattenedRecords(ctx, namespaceName, lines)
@@ -276,7 +276,7 @@ func Main() {
 				duration := time.Since(t0)
 				summary := result.Summary
 
-				log.Printf("processed %d entries from %q in %s: %+v", len(lines), filename, duration, summary)
+				zap.L().Sugar().Infof("processed %d entries from %q in %s: %+v", len(lines), filename, duration, summary)
 				totalProcessed += int64(len(lines))
 				totalInserted += int64(summary.NumInserted)
 				totalError += int64(summary.NumError)
@@ -284,7 +284,7 @@ func Main() {
 
 			totalDuration := time.Since(t00)
 			processingRate := float64(totalProcessed) / totalDuration.Seconds()
-			log.Printf("processed %d entries in %s: %d inserted, %d errors, %.2f/s", totalProcessed, totalDuration, totalInserted, totalError, processingRate)
+			zap.L().Sugar().Infof("processed %d entries in %s: %d inserted, %d errors, %.2f/s", totalProcessed, totalDuration, totalInserted, totalError, processingRate)
 
 			return nil
 		},

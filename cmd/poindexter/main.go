@@ -15,6 +15,7 @@ import (
 	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 	"github.com/steinarvk/poindexter/lib/flatten"
+	"go.uber.org/zap"
 )
 
 func flattenRecords(reader io.Reader) ([]*flatten.Record, error) {
@@ -115,7 +116,7 @@ func (d *DB) Close() error {
 func getOrCreateKey(tx *sql.Tx, namespaceID int, keyName string) (int, error) {
 	var keyID int
 
-	log.Printf("getOrCreateKey: %d, %s", namespaceID, keyName)
+	zap.L().Sugar().Infof("getOrCreateKey: %d, %s", namespaceID, keyName)
 
 	err := tx.QueryRow("SELECT key_id FROM indexing_keys WHERE namespace_id = $1 AND key_name = ANY($2)", namespaceID, keyName).Scan(&keyID)
 	switch {
@@ -135,7 +136,7 @@ func getOrCreateKey(tx *sql.Tx, namespaceID int, keyName string) (int, error) {
 func getOrCreateNamespace(tx *sql.Tx, namespaceName string) (int, error) {
 	var namespaceID int
 
-	log.Printf("getOrCreateNamespace: %s", namespaceName)
+	zap.L().Sugar().Infof("getOrCreateNamespace: %s", namespaceName)
 
 	err := tx.QueryRow("SELECT namespace_id FROM namespaces WHERE namespace_name = $1", namespaceName).Scan(&namespaceID)
 	switch {
@@ -416,7 +417,7 @@ func (d *DB) InsertRecordBatch(records []*flatten.Record) (*BatchInsertionResult
 	}
 	success = true
 
-	log.Printf("%d/%d records were new; inserted %d records and %d index entries after %v", len(toInsertRecordIDs), len(records), numInsertedRecords, numIndexEntriesInserted, time.Since(t0))
+	zap.L().Sugar().Infof("%d/%d records were new; inserted %d records and %d index entries after %v", len(toInsertRecordIDs), len(records), numInsertedRecords, numIndexEntriesInserted, time.Since(t0))
 
 	return summarize(results), nil
 }
@@ -450,6 +451,6 @@ func mainCore() error {
 		return err
 	}
 
-	log.Printf("result: %+v", result.Summary)
+	zap.L().Sugar().Infof("result: %+v", result.Summary)
 	return nil
 }

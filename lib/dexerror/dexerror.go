@@ -2,7 +2,10 @@ package dexerror
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+
+	"go.uber.org/zap"
 )
 
 type ErrorDetail struct {
@@ -24,6 +27,8 @@ type PoindexterError interface {
 	HTTPStatusCode() int
 	PublicErrorDetail() PublicErrorDetail
 	InternalErrorDetail() InternalErrorDetail
+	InternalErrorMessage() string
+	InternalZapFields() []zap.Field
 }
 
 type errorOptions struct {
@@ -45,6 +50,38 @@ func (e *errorOptions) HTTPStatusCode() int {
 		return http.StatusInternalServerError
 	}
 	return e.httpCode
+}
+
+func (e *errorOptions) InternalZapFields() []zap.Field {
+	fields := map[string]interface{}{}
+
+	for k, v := range e.public.Data {
+		fields[k] = v
+	}
+
+	for k, v := range e.internal.Data {
+		fields[k] = v
+	}
+
+	var rv []zap.Field
+	for k, v := range fields {
+		rv = append(rv, zap.Any(k, v))
+	}
+
+	return rv
+}
+
+func (e *errorOptions) InternalErrorMessage() string {
+	if e.public.Message != "" && e.internal.Message != "" && e.public.Message != e.internal.Message {
+		return fmt.Sprintf("%s (%s)", e.public.Message, e.internal.Message)
+	}
+	if e.public.Message != "" {
+		return e.public.Message
+	}
+	if e.internal.Message != "" {
+		return e.internal.Message
+	}
+	return "unknown error"
 }
 
 func (e *errorOptions) Error() string {
