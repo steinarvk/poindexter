@@ -1,8 +1,10 @@
 package integrationtest
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/steinarvk/poindexter/lib/dexapi"
 	"go.uber.org/zap"
 )
 
@@ -60,4 +62,20 @@ func TestWriteRecordsJSONL(t *testing.T) {
 	zap.L().Sugar().Infof("raw response body: %v", string(resp.RawBody))
 
 	// TODO: the response here needs a proper API type, which should then be tested.
+}
+
+func TestAPI404(t *testing.T) {
+	resp, err := postRequest("api/does-not-exist/", ExpectStatus(404), WithJSON("{}"))
+	if err != nil {
+		t.Fatalf("postRequest error: %v", err)
+	}
+
+	var respdata dexapi.ErrorResponse
+	if err := json.Unmarshal(resp.RawBody, &respdata); err != nil {
+		t.Fatalf("error unmarshalling response: %v", err)
+	}
+
+	if respdata.Error.Message != "No such API endpoint" {
+		t.Fatalf("unexpected error message: %v", respdata.Error.Message)
+	}
 }

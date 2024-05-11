@@ -137,17 +137,28 @@ type apiHandlerFunc func(namespace string, w http.ResponseWriter, r *http.Reques
 func (s *Server) Run() error {
 	r := mux.NewRouter()
 
-	addHandler := func(pattern string, handler VerifyingApiHandler) {
+	apiRouter := r.PathPrefix("/api").Subrouter()
+
+	addHandler := func(method string, pattern string, handler VerifyingApiHandler) {
 		h := s.middleware(handler)
 		h = otelhttp.NewHandler(h, pattern)
-		r.Handle(pattern, h)
+		apiRouter.Handle(pattern, h).Methods(method)
 	}
 
-	addHandler("/api/query/{ns}/records/", queryApiHandler{s.readQueryRecordsHandler})
-	addHandler("/api/query/{ns}/fields/", queryApiHandler{s.readQueryFieldsHandler})
+	addHandler("POST", "/query/{ns}/records/", queryApiHandler{s.readQueryRecordsHandler})
+	addHandler("POST", "/query/{ns}/fields/", queryApiHandler{s.readQueryFieldsHandler})
+	addHandler("GET", "/query/{ns}/records/by-id/{id}", queryApiHandler{s.notImplementedHandler})
+	addHandler("GET", "/query/{ns}/records/by-field/{field}/{value}", queryApiHandler{s.notImplementedHandler})
 
-	addHandler("/api/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
-	addHandler("/api/ingest/{ns}/jsonl/", ingestApiHandler{s.writeJSONLHandler})
+	addHandler("POST", "/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
+	addHandler("POST", "/ingest/{ns}/jsonl/", ingestApiHandler{s.writeJSONLHandler})
+	addHandler("POST", "/ingest/{ns}/batches/check/", ingestApiHandler{s.notImplementedHandler})
+	addHandler("GET", "/ingest/{ns}/batches/{batch}/", ingestApiHandler{s.notImplementedHandler})
+	addHandler("POST", "/ingest/{ns}/batches/{batch}/jsonl/", ingestApiHandler{s.notImplementedHandler})
+
+	apiRouter.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.serveAPIError(w, r, s.make404Error(r))
+	})
 
 	s.httpServer.Handler = r
 
@@ -255,26 +266,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 				return
 			}
 
-			apiErr := dexerror.AsPoindexterError(err)
-
-			requestLogger.Error(
-				apiErr.InternalErrorMessage(),
-				apiErr.InternalZapFields()...,
-			)
-			response := dexapi.ErrorResponse{
-				Error: apiErr.PublicErrorDetail(),
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(apiErr.HTTPStatusCode())
-
-			marshalled, oopsErr := json.MarshalIndent(response, "", "  ")
-			if oopsErr != nil {
-				requestLogger.Error("error marshalling error", zap.Error(oopsErr))
-				w.Write([]byte(`{"error": {"message": "internal error"}}`))
-			} else {
-				w.Write(marshalled)
-			}
+			s.serveAPIError(w, r, err)
 		}
 	})
 }
@@ -489,4 +481,47 @@ func Main() error {
 	}
 
 	return serv.Run()
+}
+
+func (s *Server) notImplementedHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	return dexerror.New(
+		dexerror.WithHTTPCode(500),
+		dexerror.WithErrorID("internal_error.endpoint_not_implemented"),
+		dexerror.WithPublicMessage("endpoint not implemented yet"),
+		dexerror.WithPublicData("path", r.URL.Path),
+	)
+}
+
+func (s *Server) make404Error(r *http.Request) error {
+	return dexerror.New(
+		dexerror.WithHTTPCode(404),
+		dexerror.WithErrorID("bad_request.no_such_endpoint"),
+		dexerror.WithPublicMessage("No such API endpoint"),
+		dexerror.WithPublicData("path", r.URL.Path),
+	)
+}
+
+func (s *Server) serveAPIError(w http.ResponseWriter, r *http.Request, err error) {
+	logger := logging.FromContext(r.Context())
+
+	apiErr := dexerror.AsPoindexterError(err)
+
+	logger.Error(
+		apiErr.InternalErrorMessage(),
+		apiErr.InternalZapFields()...,
+	)
+	response := dexapi.ErrorResponse{
+		Error: apiErr.PublicErrorDetail(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(apiErr.HTTPStatusCode())
+
+	marshalled, oopsErr := json.MarshalIndent(response, "", "  ")
+	if oopsErr != nil {
+		logger.Error("error marshalling error", zap.Error(oopsErr))
+		w.Write([]byte(`{"error": {"message": "internal error"}}`))
+	} else {
+		w.Write(marshalled)
+	}
 }
