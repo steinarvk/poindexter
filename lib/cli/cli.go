@@ -4,15 +4,19 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/server"
+	"github.com/steinarvk/poindexter/lib/syncdir"
 	"github.com/steinarvk/poindexter/lib/version"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func readLinesFromFile(filename string, maxLineLength int) ([]string, error) {
@@ -47,6 +51,16 @@ var (
 )
 
 func Main() {
+	zapconfig := zap.NewDevelopmentConfig()
+	zapconfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	logger, err := zapconfig.Build()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logger.Sync()
+
+	zap.ReplaceGlobals(logger)
+
 	var rootCmd = &cobra.Command{Use: "poindexter"}
 
 	var serveCmd = &cobra.Command{
@@ -320,7 +334,10 @@ func Main() {
 		Use:   "scratch",
 		Short: "Unstable commands to test functionality",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
+			return syncdir.SyncDir(context.Background(), syncdir.DirectoryConfig{
+				RootDirectory:  args[0],
+				BaseNameRegexp: regexp.MustCompile(`^*.(jsonl|jsonlines)$`),
+			})
 		},
 	}
 
