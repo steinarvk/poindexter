@@ -73,9 +73,8 @@ func (c *PoindexterClient) SyncBatch(ctx context.Context, batch *Batch) error {
 		return nil
 	case 404:
 		logger.Info("batch does not exist", zap.String("digest", batch.Header.Digest))
-		break
 	default:
-		logger.Warn("unexpected status code", zap.String("digest", batch.Header.Digest), zap.Int("status", checkResp.StatusCode))
+		logger.Warn("unexpected status code", zap.String("digest", batch.Header.Digest), zap.Int("status", checkResp.StatusCode), zap.String("url", checkURL))
 		return fmt.Errorf("unexpected status code %v", checkResp.StatusCode)
 	}
 
@@ -105,7 +104,7 @@ func (c *PoindexterClient) SyncBatch(ctx context.Context, batch *Batch) error {
 	case 200:
 		logger.Info("successfully posted batch", zap.String("digest", batch.Header.Digest), zap.Int("status", postResp.StatusCode), zap.Int("size", len(batch.Data)))
 	default:
-		logger.Warn("unexpected status code", zap.String("digest", batch.Header.Digest), zap.Int("status", checkResp.StatusCode))
+		logger.Warn("unexpected status code", zap.String("digest", batch.Header.Digest), zap.Int("status", checkResp.StatusCode), zap.String("url", postURL))
 		return fmt.Errorf("unexpected status code %v", checkResp.StatusCode)
 	}
 

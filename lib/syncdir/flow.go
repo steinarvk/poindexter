@@ -65,6 +65,8 @@ func SyncDir(ctx context.Context, config DirectoryConfig, client *PoindexterClie
 
 func syncDir(ctx context.Context, config DirectoryConfig, syncBatch func(context.Context, *Batch) error) error {
 	logger := logging.FromContext(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	localdb, err := openDirectoryLocalDatabase(config)
 	if err != nil {
@@ -167,11 +169,13 @@ func syncDir(ctx context.Context, config DirectoryConfig, syncBatch func(context
 		}
 	}()
 
-	// TODO fix error handling
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
 
-	wg.Wait()
-	close(errCh)
 	for err := range errCh {
+		cancel()
 		return err
 	}
 
