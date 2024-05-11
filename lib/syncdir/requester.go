@@ -11,8 +11,9 @@ import (
 )
 
 type PoindexterClient struct {
-	Host string
-	Port int
+	Scheme string
+	Host   string
+	Port   int
 
 	User     string
 	Password string
@@ -36,11 +37,16 @@ func (c *PoindexterClient) SyncBatch(ctx context.Context, batch *Batch) error {
 		return fmt.Errorf("no password specified")
 	}
 
+	scheme := c.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+
 	var prefix string
 	if c.Port != 0 {
-		prefix = fmt.Sprintf("https://%s:%d/api", c.Host, c.Port)
+		prefix = fmt.Sprintf("%s://%s:%d/api", scheme, c.Host, c.Port)
 	} else {
-		prefix = fmt.Sprintf("https://%s/api", c.Host)
+		prefix = fmt.Sprintf("%s://%s/api", scheme, c.Host)
 	}
 	prefix += "/ingest/" + c.Namespace
 	prefix += "/batches/" + batch.Header.Digest
