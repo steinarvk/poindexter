@@ -1382,3 +1382,50 @@ func (d *DB) QueryRecordsList(ctx context.Context, namespace string, q *Compiled
 
 	return items, nil
 }
+
+func makeRecordItem(namespace string, recordID uuid.UUID, recordTimestamp time.Time, recordData []byte) (dexapi.RecordItem, error) {
+	var record dexapi.RecordItem
+	record.RecordMetadata.Namespace = namespace
+	record.RecordMetadata.RecordID = recordID.String()
+	record.RecordMetadata.Timestamp = recordTimestamp.Format(time.RFC3339Nano)
+	record.RecordMetadata.TimestampUnixNano = fmt.Sprintf("%d", recordTimestamp.UnixNano())
+
+	if err := json.Unmarshal(recordData, &record.Record); err != nil {
+		return dexapi.RecordItem{}, err
+	}
+
+	return record, nil
+}
+
+func (d *DB) LookupObjectByID(ctx context.Context, namespaceName string, recordID uuid.UUID) (*dexapi.RecordItem, error) {
+	nsid, err := d.getNamespaceID(namespaceName)
+	if err != nil {
+		return nil, err
+	}
+
+	var recordTimestamp time.Time
+	var recordData []byte
+
+	if err := d.db.QueryRowContext(ctx, `
+		SELECT record_timestamp, record_data
+		FROM records
+		WHERE namespace_id = $1 AND record_id = $2
+	`, nsid, recordID).Scan(&recordTimestamp, &recordData); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("not_found.record"),
+				dexerror.WithHTTPCode(http.StatusNotFound),
+				dexerror.WithPublicMessage("record not found"),
+				dexerror.WithPublicData("record_id", recordID.String()),
+			)
+		}
+		return nil, err
+	}
+
+	recorditem, err := makeRecordItem(namespaceName, recordID, recordTimestamp, recordData)
+	if err != nil {
+		return nil, err
+	}
+
+	return &recorditem, nil
+}

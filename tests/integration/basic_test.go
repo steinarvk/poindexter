@@ -79,3 +79,31 @@ func TestAPI404(t *testing.T) {
 		t.Fatalf("unexpected error message: %v", respdata.Error.Message)
 	}
 }
+
+func TestLookupRecord(t *testing.T) {
+	resp, err := getRequest("api/query/main/records/577255cd-d2b0-4ba5-abac-2373b8475801/")
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+
+	var respdata dexapi.LookupRecordResponse
+	if err := json.Unmarshal(resp.RawBody, &respdata); err != nil {
+		t.Fatalf("error unmarshalling response: %v", err)
+	}
+
+	if respdata.Record["message"] != "hello world" {
+		t.Fatalf("unexpected record message: %v", respdata.Record["message"])
+	}
+}
+
+func TestLookupNonexistentRecord(t *testing.T) {
+	resp, err := getRequest("api/query/main/records/577255cd-d2b0-4ba5-abac-2373b8475802/", ExpectStatus(404))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+
+	var respdata dexapi.ErrorResponse
+	if err := json.Unmarshal(resp.RawBody, &respdata); err != nil {
+		t.Fatalf("error unmarshalling response: %v", err)
+	}
+}

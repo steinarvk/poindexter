@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/XSAM/otelsql"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/dexapi"
@@ -147,8 +148,8 @@ func (s *Server) Run() error {
 
 	addHandler("POST", "/query/{ns}/records/", queryApiHandler{s.readQueryRecordsHandler})
 	addHandler("POST", "/query/{ns}/fields/", queryApiHandler{s.readQueryFieldsHandler})
-	addHandler("GET", "/query/{ns}/records/by-id/{id}", queryApiHandler{s.notImplementedHandler})
-	addHandler("GET", "/query/{ns}/records/by-field/{field}/{value}", queryApiHandler{s.notImplementedHandler})
+	addHandler("GET", "/query/{ns}/records/by/{field}/{value}/", queryApiHandler{s.notImplementedHandler})
+	addHandler("GET", "/query/{ns}/records/{id}/", queryApiHandler{s.lookupRecordByID})
 
 	addHandler("POST", "/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
 	addHandler("POST", "/ingest/{ns}/jsonl/", ingestApiHandler{s.writeJSONLHandler})
@@ -497,6 +498,7 @@ func (s *Server) make404Error(r *http.Request) error {
 		dexerror.WithHTTPCode(404),
 		dexerror.WithErrorID("bad_request.no_such_endpoint"),
 		dexerror.WithPublicMessage("No such API endpoint"),
+		dexerror.WithPublicData("method", r.Method),
 		dexerror.WithPublicData("path", r.URL.Path),
 	)
 }
@@ -524,4 +526,30 @@ func (s *Server) serveAPIError(w http.ResponseWriter, r *http.Request, err error
 	} else {
 		w.Write(marshalled)
 	}
+}
+
+func (s *Server) lookupRecordByID(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	recordID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		return dexerror.New(
+			dexerror.WithHTTPCode(400),
+			dexerror.WithErrorID("bad_request.bad_record_id"),
+			dexerror.WithPublicMessage("Bad record ID"),
+			dexerror.WithPublicData("record_id", mux.Vars(r)["id"]),
+			dexerror.WithPublicData("error", err.Error()),
+		)
+	}
+
+	recorditem, err := s.db.LookupObjectByID(ctx, namespace, recordID)
+	if err != nil {
+		return err
+	}
+
+	response := dexapi.LookupRecordResponse{
+		RecordItem: *recorditem,
+	}
+
+	return json.NewEncoder(w).Encode(response)
 }

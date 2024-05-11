@@ -23,6 +23,7 @@ type requestOptions struct {
 	host             string
 	body             *bytes.Buffer
 	user             string
+	method           string
 	password         string
 	namespace        string
 	contentType      string
@@ -35,6 +36,7 @@ func newDefaultRequestOptions() requestOptions {
 		host:     "http://localhost:15244/",
 		user:     "alice",
 		password: testPasswordsByUsername["alice"],
+		method:   "POST",
 	}
 }
 
@@ -42,6 +44,13 @@ func ExpectStatus(status int) RequestOption {
 	return func(opts *requestOptions) error {
 		opts.allowError = true
 		opts.expectStatusCode = status
+		return nil
+	}
+}
+
+func WithMethod(value string) RequestOption {
+	return func(opts *requestOptions) error {
+		opts.method = value
 		return nil
 	}
 }
@@ -84,6 +93,14 @@ type Response struct {
 }
 
 func postRequest(endpoint string, opts ...RequestOption) (*Response, error) {
+	return makeRequest(endpoint, append(opts, WithMethod("POST"))...)
+}
+
+func getRequest(endpoint string, opts ...RequestOption) (*Response, error) {
+	return makeRequest(endpoint, append(opts, WithMethod("GET"))...)
+}
+
+func makeRequest(endpoint string, opts ...RequestOption) (*Response, error) {
 	reqOpts := newDefaultRequestOptions()
 	for _, opt := range opts {
 		if err := opt(&reqOpts); err != nil {
@@ -93,7 +110,12 @@ func postRequest(endpoint string, opts ...RequestOption) (*Response, error) {
 
 	url := strings.TrimRight(reqOpts.host, "/") + "/" + strings.TrimLeft(endpoint, "/")
 
-	req, err := http.NewRequest("POST", url, reqOpts.body)
+	var requestBody io.Reader
+	if reqOpts.body != nil {
+		requestBody = reqOpts.body
+	}
+
+	req, err := http.NewRequest(reqOpts.method, url, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("NewRequest error: %v", err)
 	}
