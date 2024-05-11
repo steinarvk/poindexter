@@ -15,10 +15,23 @@ type LookupRecordResponse struct {
 }
 
 type CheckBatchResponse struct {
-	BatchName    string `json:"batch_name"`
-	BatchPresent bool   `json:"batch_present"`
+	BatchStatus
 }
 
 type ErrorResponse struct {
 	Error dexerror.PublicErrorDetail `json:"error"`
+}
+
+type CheckBatchesRequest struct {
+	BatchNames []string `json:"batch_names"`
+}
+
+type BatchStatus struct {
+	Namespace string `json:"namespace"`
+	BatchName string `json:"batch_name"`
+	Processed bool   `json:"processed"`
+}
+
+type CheckBatchesResponse struct {
+	Batches []BatchStatus `json:"batches"`
 }

@@ -1543,3 +1543,40 @@ func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fiel
 
 	return rv, nil
 }
+
+func (d *DB) CheckBatches(ctx context.Context, namespaceName string, batchNames []string) ([]dexapi.BatchStatus, error) {
+	nsid, err := d.getNamespaceID(namespaceName)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT batch_data_hash
+		FROM processed_batches
+		WHERE namespace_id = $1 AND batch_data_hash = ANY($2)
+	`, nsid, pq.Array(batchNames))
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]bool{}
+
+	for rows.Next() {
+		var batchName string
+		if err := rows.Scan(&batchName); err != nil {
+			return nil, err
+		}
+		seen[batchName] = true
+	}
+
+	var result []dexapi.BatchStatus
+	for _, batchName := range batchNames {
+		result = append(result, dexapi.BatchStatus{
+			Namespace: namespaceName,
+			BatchName: batchName,
+			Processed: seen[batchName],
+		})
+	}
+
+	return result, nil
+}

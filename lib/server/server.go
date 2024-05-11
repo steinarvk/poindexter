@@ -154,7 +154,7 @@ func (s *Server) Run() error {
 
 	addHandler("POST", "/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
 	addHandler("POST", "/ingest/{ns}/jsonl/", ingestApiHandler{s.ingestJSONLHandler})
-	addHandler("POST", "/ingest/{ns}/batches/check/", ingestApiHandler{s.notImplementedHandler})
+	addHandler("POST", "/ingest/{ns}/batches/check/", ingestApiHandler{s.ingestCheckBatchesHandler})
 	addHandler("GET", "/ingest/{ns}/batches/{batch}/", ingestApiHandler{s.ingestCheckBatchHandler})
 	addHandler("POST", "/ingest/{ns}/batches/{batch}/jsonl/", ingestApiHandler{s.ingestJSONLHandler})
 
@@ -274,35 +274,14 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 }
 
 func (s *Server) readQueryFieldsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
-	var req interface{}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return err
-	}
-
-	defer r.Body.Close()
-
-	response := map[string]interface{}{
-		"message":        "foo called",
-		"namespace":      namespace,
-		"request":        req,
-		"implementation": "TODO",
-	}
-	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(response)
-}
-
-type simpleReq struct {
-	Namespace             string                   `json:"namespace"`
-	Limit                 int                      `json:"limit"`
-	LowLevelFieldsPresent []string                 `json:"low_level_fields_present"`
-	LowLevelFieldHasValue map[string][]interface{} `json:"low_level_field_has_value"`
+	return s.notImplementedHandler(namespace, w, r)
 }
 
 func (s *Server) readQueryRecordsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	var queryReq dexapi.Query
-	if err := json.NewDecoder(r.Body).Decode(&queryReq); err != nil {
+	if err := s.decodeRequest(r, &queryReq); err != nil {
 		return err
 	}
 	defer r.Body.Close()
@@ -367,7 +346,7 @@ func (s *Server) writeSingleRecordHandler(namespace string, w http.ResponseWrite
 	ctx := r.Context()
 
 	var req interface{}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := s.decodeRequest(r, &req); err != nil {
 		return err
 	}
 
@@ -587,8 +566,11 @@ func (s *Server) ingestCheckBatchHandler(namespace string, w http.ResponseWriter
 	}
 
 	response := dexapi.CheckBatchResponse{
-		BatchName:    batchName,
-		BatchPresent: true,
+		BatchStatus: dexapi.BatchStatus{
+			Namespace: namespace,
+			BatchName: batchName,
+			Processed: true,
+		},
 	}
 
 	return json.NewEncoder(w).Encode(response)
@@ -614,6 +596,48 @@ func (s *Server) lookupRecordByField(namespace string, w http.ResponseWriter, r 
 
 	response := dexapi.LookupRecordResponse{
 		RecordItem: *recorditem,
+	}
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) decodeRequest(r *http.Request, v interface{}) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		return dexerror.New(
+			dexerror.WithHTTPCode(400),
+			dexerror.WithErrorID("bad_request.invalid_request"),
+			dexerror.WithPublicMessage("invalid request"),
+			dexerror.WithPublicData("error", err.Error()),
+		)
+	}
+	return nil
+}
+
+func (s *Server) ingestCheckBatchesHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	var checkBatchesRequest dexapi.CheckBatchesRequest
+	if err := s.decodeRequest(r, &checkBatchesRequest); err != nil {
+		return err
+	}
+
+	if len(checkBatchesRequest.BatchNames) == 0 {
+		return dexerror.New(
+			dexerror.WithHTTPCode(400),
+			dexerror.WithErrorID("bad_request.no_batches"),
+			dexerror.WithPublicMessage("No batches specified"),
+		)
+	}
+
+	statuses, err := s.db.CheckBatches(ctx, namespace, checkBatchesRequest.BatchNames)
+	if err != nil {
+		return err
+	}
+
+	response := dexapi.CheckBatchesResponse{
+		Batches: statuses,
 	}
 
 	return json.NewEncoder(w).Encode(response)
