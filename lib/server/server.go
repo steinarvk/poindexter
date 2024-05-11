@@ -260,7 +260,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 			return
 		}
 
-		zap.L().Sugar().Infof("checked access for user %q to namespace %q: %+v", username, namespace, accessLevel)
+		requestLogger.Sugar().Infof("checked access for user %q to namespace %q: %+v", username, namespace, accessLevel)
 
 		if err := next.CheckAndServeHTTP(accessLevel, namespace, w, r); err != nil {
 			if err == errUnauthorized {
@@ -269,6 +269,8 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 			}
 
 			s.serveAPIError(w, r, err)
+		} else {
+			requestLogger.Info("request OK")
 		}
 	})
 }
@@ -499,7 +501,7 @@ func (s *Server) serveAPIError(w http.ResponseWriter, r *http.Request, err error
 
 	apiErr := dexerror.AsPoindexterError(err)
 
-	logger.Error(
+	logger.Info(
 		apiErr.InternalErrorMessage(),
 		apiErr.InternalZapFields()...,
 	)

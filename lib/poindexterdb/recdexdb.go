@@ -1194,7 +1194,7 @@ func (d *DB) InsertFlattenedRecordsAsBatch(ctx context.Context, namespaceName st
 			return nil, err
 		}
 
-		logger.Sugar().Infof("registering batch %q in namespace %q as processed", batchID, namespaceName, zap.String("batch_id", batchID))
+		logger.Info("registering batch processed", zap.String("batch_id", batchID), zap.String("namespace", namespaceName))
 	}
 
 	summary := summarize(result)

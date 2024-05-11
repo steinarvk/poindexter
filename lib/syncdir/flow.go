@@ -45,7 +45,7 @@ type Batch struct {
 	Data   []byte
 }
 
-func SyncDir(ctx context.Context, config DirectoryConfig) error {
+func SyncDir(ctx context.Context, config DirectoryConfig, client *PoindexterClient) error {
 	logger := logging.FromContext(ctx)
 	logger.Sugar().Infof("syncing directory %q", config.RootDirectory)
 	err := syncDir(ctx, config, func(ctx context.Context, batch *Batch) error {
@@ -57,7 +57,7 @@ func SyncDir(ctx context.Context, config DirectoryConfig) error {
 			zap.Bool("final", batch.Header.Final),
 			zap.Int64("item_count", batch.Header.ItemCount),
 		)
-		return nil
+		return client.SyncBatch(ctx, batch)
 	})
 	logger.Sugar().Infof("result of syncing directory %q", config.RootDirectory, zap.Error(err))
 	return err
@@ -166,6 +166,8 @@ func syncDir(ctx context.Context, config DirectoryConfig, syncBatch func(context
 			}
 		}
 	}()
+
+	// TODO fix error handling
 
 	wg.Wait()
 	close(errCh)
