@@ -152,10 +152,10 @@ func (s *Server) Run() error {
 	addHandler("GET", "/query/{ns}/records/{id}/", queryApiHandler{s.lookupRecordByID})
 
 	addHandler("POST", "/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
-	addHandler("POST", "/ingest/{ns}/jsonl/", ingestApiHandler{s.writeJSONLHandler})
+	addHandler("POST", "/ingest/{ns}/jsonl/", ingestApiHandler{s.ingestJSONLHandler})
 	addHandler("POST", "/ingest/{ns}/batches/check/", ingestApiHandler{s.notImplementedHandler})
-	addHandler("GET", "/ingest/{ns}/batches/{batch}/", ingestApiHandler{s.notImplementedHandler})
-	addHandler("POST", "/ingest/{ns}/batches/{batch}/jsonl/", ingestApiHandler{s.notImplementedHandler})
+	addHandler("GET", "/ingest/{ns}/batches/{batch}/", ingestApiHandler{s.ingestCheckBatchHandler})
+	addHandler("POST", "/ingest/{ns}/batches/{batch}/jsonl/", ingestApiHandler{s.ingestJSONLHandler})
 
 	apiRouter.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.serveAPIError(w, r, s.make404Error(r))
@@ -210,10 +210,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 		requestLogger := zap.L().With(
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
-			zap.String("remote_addr", r.RemoteAddr),
 		)
-
-		r = r.WithContext(logging.NewContextWithLogger(r.Context(), requestLogger))
 
 		requestLogger.Info("processing incoming request")
 
@@ -234,6 +231,9 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 			writeJSONError(w, "missing namespace", http.StatusBadRequest)
 			return
 		}
+
+		requestLogger = requestLogger.With(zap.String("namespace", namespace))
+		r = r.WithContext(logging.NewContextWithLogger(r.Context(), requestLogger))
 
 		serveUnauthorized := func() {
 			zap.L().Sugar().Infof("rejecting access to user %q to namespace %q", username, namespace)
@@ -322,11 +322,13 @@ func (s *Server) readQueryRecordsHandler(namespace string, w http.ResponseWriter
 	return json.NewEncoder(w).Encode(response)
 }
 
-func (s *Server) writeJSONLHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+func (s *Server) ingestJSONLHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
 	const (
 		maxLines      = 100000
 		maxLineLength = 1024 * 1024
 	)
+
+	batchID := mux.Vars(r)["batch"]
 
 	scanner := bufio.NewScanner(r.Body)
 	defer r.Body.Close()
@@ -342,10 +344,19 @@ func (s *Server) writeJSONLHandler(namespace string, w http.ResponseWriter, r *h
 		}
 	}
 
-	response, err := s.db.InsertFlattenedRecords(r.Context(), namespace, lines)
+	var response *poindexterdb.BatchInsertionResult
+	var err error
+
+	if batchID == "" {
+		response, err = s.db.InsertFlattenedRecords(r.Context(), namespace, lines)
+	} else {
+		response, err = s.db.InsertFlattenedRecordsAsBatch(r.Context(), namespace, lines, batchID)
+	}
 	if err != nil {
 		return err
 	}
+
+	// TODO proper API response
 
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(response)
@@ -549,6 +560,34 @@ func (s *Server) lookupRecordByID(namespace string, w http.ResponseWriter, r *ht
 
 	response := dexapi.LookupRecordResponse{
 		RecordItem: *recorditem,
+	}
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) ingestCheckBatchHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	batchName := mux.Vars(r)["batch"]
+
+	present, err := s.db.CheckBatch(ctx, namespace, batchName)
+	if err != nil {
+		return err
+	}
+
+	if !present {
+		return dexerror.New(
+			dexerror.WithHTTPCode(404),
+			dexerror.WithUnremarkable(),
+			dexerror.WithErrorID("not_found.batch_not_found"),
+			dexerror.WithPublicMessage("Batch not found"),
+			dexerror.WithPublicData("batch_name", batchName),
+		)
+	}
+
+	response := dexapi.CheckBatchResponse{
+		BatchName:    batchName,
+		BatchPresent: true,
 	}
 
 	return json.NewEncoder(w).Encode(response)

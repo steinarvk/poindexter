@@ -29,12 +29,18 @@ type PoindexterError interface {
 	InternalErrorDetail() InternalErrorDetail
 	InternalErrorMessage() string
 	InternalZapFields() []zap.Field
+	IsUnremarkable() bool
 }
 
 type errorOptions struct {
-	httpCode int
-	public   PublicErrorDetail
-	internal InternalErrorDetail
+	httpCode     int
+	public       PublicErrorDetail
+	internal     InternalErrorDetail
+	unremarkable bool
+}
+
+func (e *errorOptions) IsUnremarkable() bool {
+	return e.unremarkable
 }
 
 func (e *errorOptions) PublicErrorDetail() PublicErrorDetail {
@@ -89,6 +95,12 @@ func (e *errorOptions) Error() string {
 }
 
 type ErrorOption func(*errorOptions)
+
+func WithUnremarkable() ErrorOption {
+	return func(opts *errorOptions) {
+		opts.unremarkable = true
+	}
+}
 
 func WithHTTPCode(code int) ErrorOption {
 	return func(opts *errorOptions) {

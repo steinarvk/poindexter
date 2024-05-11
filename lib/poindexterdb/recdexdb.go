@@ -18,6 +18,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/dexerror"
 	"github.com/steinarvk/poindexter/lib/flatten"
 	"github.com/steinarvk/poindexter/lib/logging"
+	"go.uber.org/zap"
 )
 
 type Namespace int
@@ -1119,6 +1120,10 @@ func (d *DB) InsertObject(ctx context.Context, namespaceName string, value inter
 }
 
 func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, lines []string) (*BatchInsertionResult, error) {
+	return d.InsertFlattenedRecordsAsBatch(ctx, namespaceName, lines, "")
+}
+
+func (d *DB) InsertFlattenedRecordsAsBatch(ctx context.Context, namespaceName string, lines []string, batchID string) (*BatchInsertionResult, error) {
 	logger := logging.FromContext(ctx)
 
 	t0 := time.Now()
@@ -1179,6 +1184,16 @@ func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, l
 
 	if len(result) != len(lines) {
 		return nil, errors.New("internal error: mismatched result lengths")
+	}
+
+	if batchID != "" {
+		// insert if not exist batch ID in batch table
+		_, err := d.db.ExecContext(ctx, "INSERT INTO processed_batches (namespace_id, batch_data_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING", nsid, batchID)
+		if err != nil {
+			return nil, err
+		}
+
+		logger.Sugar().Infof("registering batch %q in namespace %q as processed", batchID, namespaceName, zap.String("batch_id", batchID))
 	}
 
 	summary := summarize(result)
@@ -1428,4 +1443,26 @@ func (d *DB) LookupObjectByID(ctx context.Context, namespaceName string, recordI
 	}
 
 	return &recorditem, nil
+}
+
+func (d *DB) CheckBatch(ctx context.Context, namespaceName string, batchName string) (bool, error) {
+	nsid, err := d.getNamespaceID(namespaceName)
+	if err != nil {
+		return false, err
+	}
+
+	var dummy int
+
+	if err := d.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM processed_batches
+		WHERE namespace_id = $1 AND batch_data_hash = $2
+	`, nsid, batchName).Scan(&dummy); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return true, nil
 }

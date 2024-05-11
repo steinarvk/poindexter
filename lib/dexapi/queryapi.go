@@ -14,6 +14,11 @@ type LookupRecordResponse struct {
 	RecordItem
 }
 
+type CheckBatchResponse struct {
+	BatchName    string `json:"batch_name"`
+	BatchPresent bool   `json:"batch_present"`
+}
+
 type ErrorResponse struct {
 	Error dexerror.PublicErrorDetail `json:"error"`
 }

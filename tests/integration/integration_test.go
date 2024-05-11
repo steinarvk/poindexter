@@ -15,6 +15,7 @@ import (
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/server"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func TestGetHTTP(t *testing.T) {
@@ -94,6 +95,17 @@ func testSetupRecords() error {
 }
 
 func TestMain(m *testing.M) {
+	zapconfig := zap.NewDevelopmentConfig()
+	zapconfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	logger, err := zapconfig.Build()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logger.Sync()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
+
 	cmd := exec.Command("/bin/bash", "setup.sh")
 	cmd.Dir = "./config"
 	cmd.Stdout = os.Stdout
