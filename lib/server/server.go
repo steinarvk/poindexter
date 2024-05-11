@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/XSAM/otelsql"
+	"github.com/gibson042/canonicaljson-go"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/steinarvk/poindexter/lib/config"
@@ -148,7 +149,7 @@ func (s *Server) Run() error {
 
 	addHandler("POST", "/query/{ns}/records/", queryApiHandler{s.readQueryRecordsHandler})
 	addHandler("POST", "/query/{ns}/fields/", queryApiHandler{s.readQueryFieldsHandler})
-	addHandler("GET", "/query/{ns}/records/by/{field}/{value}/", queryApiHandler{s.notImplementedHandler})
+	addHandler("GET", "/query/{ns}/records/by/{field}/{value}/", queryApiHandler{s.lookupRecordByField})
 	addHandler("GET", "/query/{ns}/records/{id}/", queryApiHandler{s.lookupRecordByID})
 
 	addHandler("POST", "/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
@@ -588,6 +589,31 @@ func (s *Server) ingestCheckBatchHandler(namespace string, w http.ResponseWriter
 	response := dexapi.CheckBatchResponse{
 		BatchName:    batchName,
 		BatchPresent: true,
+	}
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) lookupRecordByField(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	fieldName := mux.Vars(r)["field"]
+
+	fieldValueString := mux.Vars(r)["value"]
+
+	// How to canonicalize? TODO for now just assume it's a string.
+	valueAsCanonicalBytes, err := canonicaljson.Marshal(fieldValueString)
+	if err != nil {
+		return err
+	}
+
+	recorditem, err := s.db.LookupObjectByField(ctx, namespace, fieldName, string(valueAsCanonicalBytes))
+	if err != nil {
+		return err
+	}
+
+	response := dexapi.LookupRecordResponse{
+		RecordItem: *recorditem,
 	}
 
 	return json.NewEncoder(w).Encode(response)

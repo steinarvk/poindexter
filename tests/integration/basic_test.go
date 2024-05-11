@@ -107,3 +107,60 @@ func TestLookupNonexistentRecord(t *testing.T) {
 		t.Fatalf("error unmarshalling response: %v", err)
 	}
 }
+
+func TestLookupByField(t *testing.T) {
+	if err := insertRecords([]string{
+		`{"my-unique-field": "this-is-unique", "message": "hello world"}`,
+		`{"my-unique-field": "this-is-not-unique", "message": "hello universe"}`,
+		`{"my-unique-field": "this-is-not-unique", "message": "hello there"}`,
+	}); err != nil {
+		t.Fatalf("postRequest error: %v", err)
+	}
+
+	if _, err := getRequest("api/query/main/records/by/my-unique-field/this-is-not-unique/", ExpectStatus(404)); err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+
+	resp, err := getRequest("api/query/main/records/by/my-unique-field/this-is-unique/", ExpectStatus(200))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+
+	var respdata dexapi.LookupRecordResponse
+	if err := json.Unmarshal(resp.RawBody, &respdata); err != nil {
+		t.Fatalf("error unmarshalling response: %v", err)
+	}
+
+	if respdata.Record["message"] != "hello world" {
+		t.Fatalf("unexpected record message: %v", respdata.Record["message"])
+	}
+}
+
+func TestLookupByFieldSuperseded(t *testing.T) {
+	if err := insertRecords([]string{
+		`{"id": "33cc00ee-ba1a-4b0f-8257-833b33aa16cf", "my-new-unique-field": "this-is-unique", "message": "hello world"}`,
+		`{"my-new-unique-field": "this-is-not-unique", "message": "hello universe"}`,
+		`{"my-new-unique-field": "this-is-not-unique", "message": "hello there"}`,
+		`{"supersedes_id": "33cc00ee-ba1a-4b0f-8257-833b33aa16cf", "my-new-unique-field": "this-is-unique", "message": "hello multiverse"}`,
+	}); err != nil {
+		t.Fatalf("postRequest error: %v", err)
+	}
+
+	if _, err := getRequest("api/query/main/records/by/my-new-unique-field/this-is-not-unique/", ExpectStatus(404)); err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+
+	resp, err := getRequest("api/query/main/records/by/my-new-unique-field/this-is-unique/", ExpectStatus(200))
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+
+	var respdata dexapi.LookupRecordResponse
+	if err := json.Unmarshal(resp.RawBody, &respdata); err != nil {
+		t.Fatalf("error unmarshalling response: %v", err)
+	}
+
+	if respdata.Record["message"] != "hello multiverse" {
+		t.Fatalf("unexpected record message: %v", respdata.Record["message"])
+	}
+}

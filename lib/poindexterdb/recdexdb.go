@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1465,4 +1466,80 @@ func (d *DB) CheckBatch(ctx context.Context, namespaceName string, batchName str
 	}
 
 	return true, nil
+}
+
+func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fieldName string, canonicalizedFieldValue string) (*dexapi.RecordItem, error) {
+	nsid, err := d.getNamespaceID(namespaceName)
+	if err != nil {
+		return nil, err
+	}
+
+	qb := newQueryBuilder((nsid))
+
+	qb.selectClause = "records.record_id, records.record_timestamp, records.record_data"
+
+	qb.limit = 2
+
+	if err := qb.setOmitSuperseded(); err != nil {
+		return nil, err
+	}
+
+	if !strings.HasPrefix(fieldName, ".") {
+		fieldName = "." + fieldName
+	}
+
+	if err := qb.addFieldHasValue(fieldName, canonicalizedFieldValue); err != nil {
+		return nil, err
+	}
+
+	queryString, queryArgs, err := qb.buildQuery()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := d.db.QueryContext(ctx, queryString, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rv *dexapi.RecordItem
+
+	for rows.Next() {
+		var recordID uuid.UUID
+		var recordTimestamp time.Time
+		var recordData []byte
+
+		if err := rows.Scan(&recordID, &recordTimestamp, &recordData); err != nil {
+			return nil, err
+		}
+
+		if rv != nil {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("lookup_error.multiple_records"),
+				dexerror.WithHTTPCode(http.StatusNotFound),
+				dexerror.WithPublicMessage("multiple records found for field"),
+				dexerror.WithPublicData("field_name", fieldName),
+				dexerror.WithPublicData("field_value", canonicalizedFieldValue),
+			)
+		}
+
+		item, err := makeRecordItem(namespaceName, recordID, recordTimestamp, recordData)
+		if err != nil {
+			return nil, err
+		}
+		rv = &item
+	}
+
+	if rv == nil {
+		return nil, dexerror.New(
+			dexerror.WithErrorID("not_found.record"),
+			dexerror.WithHTTPCode(http.StatusNotFound),
+			dexerror.WithPublicMessage("no record found for field"),
+			dexerror.WithPublicData("field_name", fieldName),
+			dexerror.WithPublicData("field_value", canonicalizedFieldValue),
+		)
+	}
+
+	return rv, nil
 }
