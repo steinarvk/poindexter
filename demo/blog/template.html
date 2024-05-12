@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Blog</title>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Nunito', sans-serif;
+            padding: 20px;
+            background-color: #faf3e0;
+            /* Light cream background */
+            color: #5a3e36;
+            /* Dark brown text color */
+        }
+
+        article {
+            margin-bottom: 20px;
+            /* Subtle pink border */
+            padding-bottom: 10px;
+            background-color: #fff;
+            padding: 20px;
+            box-shadow: 0 2px 5px rgba(102, 70, 53, 0.1);
+            /* Soft brown shadow */
+        }
+
+        h2 {
+            color: #815854;
+            /* Warm brown title color */
+            margin-block: 0;
+        }
+
+        .meta {
+            color: #a4876b;
+            /* Soft tan color for metadata */
+            font-size: 0.85em;
+            margin-bottom: 10px;
+        }
+
+        .content {
+            margin-top: 10px;
+        }
+
+        .tags {
+            margin-top: 10px;
+        }
+
+        .tag {
+            display: inline-block;
+            background: #d9a5b3;
+            /* Matching the border, a subtle pink */
+            padding: 5px 10px;
+            font-size: 0.85em;
+            border-radius: 3px;
+            margin-right: 5px;
+        }
+
+        nav {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .pagination-link {
+            text-decoration: none;
+            color: #815854;
+            background-color: #d9a5b3;
+            padding: 5px 10px;
+            border-radius: 5px;
+            margin: 0 5px;
+        }
+    </style>
+</head>
+
+<body>
+    {{range .Articles}}
+    <article>
+        <h2>{{.Title}}</h2>
+        <div class="meta">{{.Timestamp.Format "Jan 02, 2006"}} by {{.AuthorName}}</div>
+        <div class="content">{{.HTMLContent}}</div> <!-- Use HTMLContent directly -->
+        <div class="tags">
+            {{range .Tags}}<span class="tag">{{.}}</span>{{end}}
+        </div>
+    </article>
+    {{end}}
+    <nav>
+        {{if .PreviousPage}}
+        <a href="?page={{.PreviousPage}}" class="pagination-link">Previous</a>
+        {{end}}
+        {{if .NextPage}}
+        <a href="?page={{.NextPage}}" class="pagination-link">Next</a>
+        {{end}}
+    </nav>
+</body>
+
+</html>
