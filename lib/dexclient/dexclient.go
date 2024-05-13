@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/docker/engine/pkg/homedir"
 	"github.com/mitchellh/go-homedir"
 	"github.com/steinarvk/poindexter/lib/dexerror"
 	"github.com/steinarvk/poindexter/lib/logging"
@@ -34,7 +33,7 @@ type Client struct {
 }
 
 func DefaultConfigFilename(ctx context.Context) (string, error) {
-	rv, err := homedir.Expand("~/.config/poindexter-client.yaml")
+	rv, err := homedir.Expand("~/.config/poindexter/poindexter-client.yaml")
 	if err != nil {
 		return "", err
 	}
@@ -51,7 +50,7 @@ func ConfigFilenames(ctx context.Context) ([]string, error) {
 		rv = append(rv, directories...)
 	}
 
-	defaultFilename, err := DefaultConfigFilename()
+	defaultFilename, err := DefaultConfigFilename(ctx)
 	if err != nil {
 		logger.Warn("failed to determine default config filename", zap.Error(err))
 	} else {
@@ -276,10 +275,11 @@ func New(ctx context.Context, cfg *Config, selector Selector) (*Client, error) {
 		if maybeNamespaceCfg != nil {
 			defaultUsers := maybeNamespaceCfg.DefaultUsers
 			if defaultUsers != nil {
-				if selector.AccessGroup == "query" {
+				if defaultUsers.Query == defaultUsers.Ingest {
 					username = defaultUsers.Query
-				}
-				if selector.AccessGroup == "ingest" {
+				} else if selector.AccessGroup == "query" {
+					username = defaultUsers.Query
+				} else if selector.AccessGroup == "ingest" {
 					username = defaultUsers.Ingest
 				}
 			}
