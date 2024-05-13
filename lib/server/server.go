@@ -149,6 +149,7 @@ func (s *Server) Run() error {
 
 	addHandler("POST", "/query/{ns}/records/", queryApiHandler{s.readQueryRecordsHandler})
 	addHandler("POST", "/query/{ns}/fields/", queryApiHandler{s.readQueryFieldsHandler})
+	addHandler("POST", "/query/{ns}/values/{field}/", queryApiHandler{s.readQueryFieldValuesHandler})
 	addHandler("GET", "/query/{ns}/records/by/{field}/{value}/", queryApiHandler{s.lookupRecordByField})
 	addHandler("GET", "/query/{ns}/records/{id}/", queryApiHandler{s.lookupRecordByID})
 
@@ -276,6 +277,14 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 }
 
 func (s *Server) readQueryFieldsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	// Same sort of body as records query, but get all the unique fields and their counts
+	// return QueryFieldsResponse (but with values not set)
+	return s.notImplementedHandler(namespace, w, r)
+}
+
+func (s *Server) readQueryFieldValuesHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	// Same sort of body as records query, though add the presence of the given field to the query.
+	// return QueryFieldsResponse (with only one field set; the chosen one values set)
 	return s.notImplementedHandler(namespace, w, r)
 }
 

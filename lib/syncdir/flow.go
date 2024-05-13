@@ -21,9 +21,21 @@ import (
 // Check whether the server already has the batch.
 // Otherwise, submit the batch identified by digest.
 
+type ClientConfig struct {
+	Scheme string
+	Host   string
+	Port   int
+
+	User     string
+	Password string
+
+	Namespace string
+}
+
 type DirectoryConfig struct {
 	RootDirectory  string
 	BaseNameRegexp *regexp.Regexp
+	ClientConfig   ClientConfig
 }
 
 type SyncableFile struct {
@@ -45,7 +57,8 @@ type Batch struct {
 	Data   []byte
 }
 
-func SyncDir(ctx context.Context, config DirectoryConfig, client *PoindexterClient) error {
+func SyncDir(ctx context.Context, config DirectoryConfig) error {
+	client := PoindexterClient{config.ClientConfig}
 	logger := logging.FromContext(ctx)
 	logger.Sugar().Infof("syncing directory %q", config.RootDirectory)
 	err := syncDir(ctx, config, func(ctx context.Context, batch *Batch) error {

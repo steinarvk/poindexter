@@ -334,7 +334,7 @@ func Main() {
 		Use:   "scratch",
 		Short: "Unstable commands to test functionality",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dexclient := syncdir.PoindexterClient{
+			dexclient := syncdir.ClientConfig{
 				Host:      os.Getenv("POINDEXTER_HOST"),
 				User:      os.Getenv("POINDEXTER_USER"),
 				Password:  os.Getenv("POINDEXTER_PASSWORD"),
@@ -343,7 +343,8 @@ func Main() {
 			return syncdir.SyncDir(context.Background(), syncdir.DirectoryConfig{
 				RootDirectory:  args[0],
 				BaseNameRegexp: regexp.MustCompile(`^*.(jsonl|jsonlines)$`),
-			}, &dexclient)
+				ClientConfig:   dexclient,
+			})
 		},
 	}
 

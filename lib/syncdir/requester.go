@@ -11,14 +11,7 @@ import (
 )
 
 type PoindexterClient struct {
-	Scheme string
-	Host   string
-	Port   int
-
-	User     string
-	Password string
-
-	Namespace string
+	ClientConfig
 }
 
 func (c *PoindexterClient) SyncBatch(ctx context.Context, batch *Batch) error {
