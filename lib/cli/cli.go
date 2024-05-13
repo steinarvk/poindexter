@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -334,17 +333,13 @@ func Main() {
 		Use:   "scratch",
 		Short: "Unstable commands to test functionality",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dexclient := syncdir.ClientConfig{
-				Host:      os.Getenv("POINDEXTER_HOST"),
-				User:      os.Getenv("POINDEXTER_USER"),
-				Password:  os.Getenv("POINDEXTER_PASSWORD"),
-				Namespace: os.Getenv("POINDEXTER_NAMESPACE"),
+			ctx := context.Background()
+			for _, arg := range args {
+				if err := syncdir.SyncDirFromConfig(ctx, arg); err != nil {
+					return err
+				}
 			}
-			return syncdir.SyncDir(context.Background(), syncdir.DirectoryConfig{
-				RootDirectory:  args[0],
-				BaseNameRegexp: regexp.MustCompile(`^*.(jsonl|jsonlines)$`),
-				ClientConfig:   dexclient,
-			})
+			return nil
 		},
 	}
 

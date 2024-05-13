@@ -2,7 +2,6 @@ package syncdir
 
 import (
 	"context"
-	"regexp"
 	"sync"
 	"time"
 
@@ -20,23 +19,6 @@ import (
 // - One batch should be up to a certain limit (one megabyte?) of JSONL data.
 // Check whether the server already has the batch.
 // Otherwise, submit the batch identified by digest.
-
-type ClientConfig struct {
-	Scheme string
-	Host   string
-	Port   int
-
-	User     string
-	Password string
-
-	Namespace string
-}
-
-type DirectoryConfig struct {
-	RootDirectory  string
-	BaseNameRegexp *regexp.Regexp
-	ClientConfig   ClientConfig
-}
 
 type SyncableFile struct {
 	Filename string
@@ -57,6 +39,15 @@ type Batch struct {
 	Data   []byte
 }
 
+func SyncDirFromConfig(ctx context.Context, configSource string) error {
+	cfg, err := ReadConfig(configSource)
+	if err != nil {
+		return err
+	}
+
+	return SyncDir(ctx, *cfg)
+}
+
 func SyncDir(ctx context.Context, config DirectoryConfig) error {
 	client := PoindexterClient{config.ClientConfig}
 	logger := logging.FromContext(ctx)
@@ -72,7 +63,7 @@ func SyncDir(ctx context.Context, config DirectoryConfig) error {
 		)
 		return client.SyncBatch(ctx, batch)
 	})
-	logger.Sugar().Infof("result of syncing directory %q", config.RootDirectory, zap.Error(err))
+	logger.Info("result of syncing directory", zap.String("root", config.RootDirectory), zap.Error(err))
 	return err
 }
 

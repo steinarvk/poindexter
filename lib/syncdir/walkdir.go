@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/steinarvk/poindexter/lib/logging"
 )
@@ -28,6 +29,20 @@ func walkDirectory(ctx context.Context, config DirectoryConfig, output chan<- Sy
 
 		if !config.BaseNameRegexp.MatchString(d.Name()) {
 			return nil
+		}
+
+		alwaysExcludedSuffixes := []string{
+			".tmp",
+			".sqlite3",
+			".sqlite",
+			".yaml",
+			".yml",
+		}
+		for _, suffix := range alwaysExcludedSuffixes {
+			if strings.HasSuffix(strings.ToLower(d.Name()), suffix) {
+				logger.Sugar().Infof("skipping file %q even though it is matched by regexp pattern", path)
+				return nil
+			}
 		}
 
 		fullPath := path
