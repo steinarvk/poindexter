@@ -24,6 +24,7 @@ type PublicErrorDetail struct {
 
 type PoindexterError interface {
 	Error() string
+	PublicMessage() string
 	HTTPStatusCode() int
 	PublicErrorDetail() PublicErrorDetail
 	InternalErrorDetail() InternalErrorDetail
@@ -45,6 +46,13 @@ func (e *errorOptions) IsUnremarkable() bool {
 
 func (e *errorOptions) PublicErrorDetail() PublicErrorDetail {
 	return e.public
+}
+
+func (e *errorOptions) PublicMessage() string {
+	if e.public.Message != "" {
+		return e.public.Message
+	}
+	return "internal error"
 }
 
 func (e *errorOptions) InternalErrorDetail() InternalErrorDetail {

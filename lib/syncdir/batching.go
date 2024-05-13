@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/steinarvk/poindexter/lib/logging"
+	"go.uber.org/zap"
 )
 
 const (
@@ -19,7 +20,7 @@ const (
 
 func readBatchesInFile(ctx context.Context, sf SyncableFile, output chan<- *Batch) error {
 	logger := logging.FromContext(ctx)
-	logger.Sugar().Infof("reading batches in file %q", sf.Filename)
+	logger.Debug("reading batches in file", zap.String("filename", sf.Filename))
 
 	f, err := os.Open(sf.Filename)
 	if err != nil {

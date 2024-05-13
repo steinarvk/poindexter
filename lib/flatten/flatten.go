@@ -3,7 +3,6 @@ package flatten
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -13,11 +12,83 @@ import (
 
 	canonicaljson "github.com/gibson042/canonicaljson-go"
 	"github.com/google/uuid"
+	"github.com/steinarvk/poindexter/lib/dexerror"
 )
 
+var falseFriends = []falseFriend{
+	{"supersedes_uuid", "supersedes_id"},
+	{"supersedes", "supersedes_id"},
+	{"locked_until_time", "locked_until"},
+	{"locked_until_timestamp", "locked_until"},
+}
+
 var (
-	errRecordHasNoID        = errors.New("record has no ID")
-	errRecordHasNoTimestamp = errors.New("record has no timestamp")
+	errInternalFlatteningError = dexerror.New(
+		dexerror.WithErrorID("internal_error.unknown_flattening_error"),
+		dexerror.WithHTTPCode(500),
+		dexerror.WithPublicMessage("unknown error"),
+		dexerror.WithInternalMessage("unknown flattening error"),
+	)
+
+	errRecordHasNoID = dexerror.New(
+		dexerror.WithErrorID("bad_record.missing_id"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: no ID field"),
+	)
+
+	errRecordHasNoTimestamp = dexerror.New(
+		dexerror.WithErrorID("bad_record.missing_timestamp"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: no record timestamp field"),
+	)
+
+	errRecordInvalidJSON = dexerror.New(
+		dexerror.WithErrorID("bad_record.invalid_json"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: invalid JSON"),
+	)
+
+	errFalseFriend = func() map[string]error {
+		rv := map[string]error{}
+		for _, ff := range falseFriends {
+			rv[ff.badFieldName] = dexerror.New(
+				dexerror.WithErrorID("bad_record.false_friend"),
+				dexerror.WithHTTPCode(400),
+				dexerror.WithPublicMessage(fmt.Sprintf("bad record: forbidden top-level field %q (the intent was probably %q)", ff.badFieldName, ff.actualFieldName)),
+			)
+		}
+		return rv
+	}()
+
+	errGenericFalseFriend = dexerror.New(
+		dexerror.WithErrorID("bad_record.false_friend"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: forbidden top-level field"),
+	)
+
+	errMultiline = dexerror.New(
+		dexerror.WithErrorID("bad_record.multiline"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: serialized record contains newline"),
+	)
+
+	errTooLong = dexerror.New(
+		dexerror.WithErrorID("bad_record.too_long"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: object too large (serialized length)"),
+	)
+
+	errNotObject = dexerror.New(
+		dexerror.WithErrorID("bad_record.not_an_object"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: record is not an object"),
+	)
+
+	errTooManyFields = dexerror.New(
+		dexerror.WithErrorID("bad_record.too_many_fields"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("bad record: record has too many fields"),
+	)
 )
 
 var (
@@ -27,13 +98,6 @@ var (
 type falseFriend struct {
 	badFieldName    string
 	actualFieldName string
-}
-
-var falseFriends = []falseFriend{
-	{"supersedes_uuid", "supersedes_id"},
-	{"supersedes", "supersedes_id"},
-	{"locked_until_time", "locked_until"},
-	{"locked_until_timestamp", "locked_until"},
 }
 
 var validIDFieldNames = []string{
@@ -111,7 +175,14 @@ func interpretFloatAsTimestamp(value float64) (time.Time, error) {
 			return t, nil
 		}
 	}
-	return time.Time{}, errors.New("invalid timestamp")
+
+	return time.Time{}, dexerror.New(
+		dexerror.WithErrorID("invalid_timestamp"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("invalid timestamp"),
+		dexerror.WithPublicData("type", "float"),
+		dexerror.WithPublicData("value", value),
+	)
 }
 
 func interpretIntAsTimestamp(value int64) (time.Time, error) {
@@ -129,7 +200,14 @@ func interpretIntAsTimestamp(value int64) (time.Time, error) {
 			return t, nil
 		}
 	}
-	return time.Time{}, errors.New("invalid timestamp")
+
+	return time.Time{}, dexerror.New(
+		dexerror.WithErrorID("invalid_timestamp"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage("invalid timestamp"),
+		dexerror.WithPublicData("type", "int"),
+		dexerror.WithPublicData("value", value),
+	)
 }
 
 func InterpretTimestamp(value interface{}) (time.Time, error) {
@@ -156,13 +234,24 @@ func interpretTimestamp(value interface{}) (time.Time, error) {
 			}
 		}
 
-		return time.Time{}, errors.New("invalid timestamp")
+		return time.Time{}, dexerror.New(
+			dexerror.WithErrorID("invalid_timestamp"),
+			dexerror.WithHTTPCode(400),
+			dexerror.WithPublicMessage("invalid timestamp"),
+			dexerror.WithPublicData("type", "string"),
+			dexerror.WithPublicData("value", value),
+		)
 	case float64:
 		return interpretFloatAsTimestamp(value)
 	default:
-		return time.Time{}, errors.New("invalid timestamp")
+		return time.Time{}, dexerror.New(
+			dexerror.WithErrorID("invalid_timestamp"),
+			dexerror.WithHTTPCode(400),
+			dexerror.WithPublicMessage("invalid timestamp"),
+			dexerror.WithPublicData("type", "unknown"),
+			dexerror.WithPublicData("value", value),
+		)
 	}
-
 }
 
 func visitJSON(elements []PathElement, value interface{}, visit func([]PathElement, interface{}) (bool, error)) error {
@@ -254,27 +343,21 @@ func isAtomicJSONValue(value interface{}) bool {
 	}
 }
 
-var (
-	errMultiline     = errors.New("serialized record contains newline")
-	errTooLong       = errors.New("serialized record too long")
-	errNotObject     = errors.New("record is not a JSON object on the top-level")
-	errTooManyFields = errors.New("record has too many fields")
-)
-
-type badJSONError struct {
-	err error
+func badJSONError(err error) error {
+	return dexerror.New(
+		dexerror.WithErrorID("bad_record.invalid_json"),
+		dexerror.WithHTTPCode(400),
+		dexerror.WithPublicMessage(fmt.Sprintf("bad record: invalid JSON: %s", err)),
+	)
 }
 
-func (b badJSONError) Error() string {
-	return fmt.Sprintf("serialized record is invalid JSON: %s", b.err)
-}
-
-type canonicalizationError struct {
-	err error
-}
-
-func (b canonicalizationError) Error() string {
-	return fmt.Sprintf("serialized record could not be canonicalized: %s", b.err)
+func canonicalizationError(err error) error {
+	return dexerror.New(
+		dexerror.WithErrorID("internal_error.unable_to_canonicalize"),
+		dexerror.WithHTTPCode(500),
+		dexerror.WithPublicMessage("failed to canonicalize record"),
+		dexerror.WithInternalMessage(err.Error()),
+	)
 }
 
 func hashSortedFieldNames(fieldNames []string) string {
@@ -299,7 +382,7 @@ func (f *Flattener) FlattenJSON(recordData []byte) (*Record, error) {
 
 	var unmarshalled interface{}
 	if err := json.Unmarshal([]byte(line), &unmarshalled); err != nil {
-		return nil, badJSONError{err}
+		return nil, badJSONError(err)
 	}
 
 	return f.FlattenObject(unmarshalled)
@@ -371,7 +454,7 @@ func (f *Flattener) FlattenObjectToFields(unmarshalled interface{}) (map[string]
 func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 	canonicalForm, err := canonicaljson.Marshal(unmarshalled)
 	if err != nil {
-		return nil, canonicalizationError{err}
+		return nil, canonicalizationError(err)
 	}
 
 	if len(canonicalForm) > f.MaxSerializedLength {
@@ -390,21 +473,33 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 
 	for _, ff := range falseFriends {
 		if _, ok := unmarshalledObj[ff.badFieldName]; ok {
-			return nil, fmt.Errorf("forbidden top-level field %q (the intent was probably %q)", ff.badFieldName, ff.actualFieldName)
+			errFF := errFalseFriend[ff.badFieldName]
+			if errFF != nil {
+				return nil, errFF
+			}
+			return nil, errGenericFalseFriend
 		}
 	}
 
 	recordHash := hashData(canonicalForm)
 
 	var recordID string
+	var chosenIDFieldName string
 	for _, idFieldName := range validIDFieldNames {
 		value, ok := unmarshalledObj[idFieldName]
 		if ok {
 			valueString, ok := value.(string)
 			if !ok {
-				return nil, fmt.Errorf("invalid ID field %q: not a string", idFieldName)
+				return nil, dexerror.New(
+					dexerror.WithErrorID("bad_record.invalid_id"),
+					dexerror.WithHTTPCode(400),
+					dexerror.WithPublicMessage("invalid ID field: not a string"),
+					dexerror.WithPublicData("field", idFieldName),
+					dexerror.WithPublicData("value", value),
+				)
 			}
 			if ok {
+				chosenIDFieldName = idFieldName
 				recordID = valueString
 				break
 			}
@@ -414,7 +509,22 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 	if recordID != "" {
 		parsed, err := uuid.Parse(recordID)
 		if err != nil {
-			return nil, fmt.Errorf("invalid UUID in record: %w", err)
+			return nil, dexerror.New(
+				dexerror.WithErrorID("bad_record.invalid_id"),
+				dexerror.WithHTTPCode(400),
+				dexerror.WithPublicMessage("invalid ID field: not a valid UUID"),
+				dexerror.WithPublicData("field", chosenIDFieldName),
+				dexerror.WithPublicData("value", recordID),
+			)
+		}
+		if parsed.String() == "00000000-0000-0000-0000-000000000000" {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("bad_record.invalid_id"),
+				dexerror.WithHTTPCode(400),
+				dexerror.WithPublicMessage("invalid ID field: zero UUID"),
+				dexerror.WithPublicData("field", chosenIDFieldName),
+				dexerror.WithPublicData("value", recordID),
+			)
 		}
 		recordUUID = parsed
 	} else {
@@ -436,7 +546,7 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 	if timestampValue != nil {
 		t, err := interpretTimestamp(timestampValue)
 		if err != nil {
-			return nil, fmt.Errorf("invalid timestamp in record: %w", err)
+			return nil, err
 		}
 		recordTimestamp = t
 	} else {
@@ -451,16 +561,29 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 	if supersedesIDString, ok := unmarshalledObj[supersedesFieldName].(string); ok {
 		parsed, err := uuid.Parse(supersedesIDString)
 		if err != nil {
-			return nil, fmt.Errorf("invalid %q in record (value was %q), %w", supersedesFieldName, supersedesIDString, err)
+			return nil, dexerror.New(
+				dexerror.WithErrorID("bad_record.invalid_supersedes_id"),
+				dexerror.WithHTTPCode(400),
+				dexerror.WithPublicMessage("invalid supersedes ID field: not a valid UUID"),
+				dexerror.WithPublicData("field", supersedesFieldName),
+				dexerror.WithPublicData("value", supersedesIDString),
+			)
 		}
 		supersedesUUID = &parsed
 	}
 
 	var lockedUntil *time.Time
 	if lockedUntilString, ok := unmarshalledObj[lockedUntilFieldName].(string); ok {
+		// TODO accept numeric also?
 		t, err := interpretTimestamp(lockedUntilString)
 		if err != nil {
-			return nil, fmt.Errorf("invalid %q in record (value was %q), %w", lockedUntilFieldName, lockedUntilString, err)
+			return nil, dexerror.New(
+				dexerror.WithErrorID("bad_record.invalid_locked_until"),
+				dexerror.WithHTTPCode(400),
+				dexerror.WithPublicMessage("invalid locked until field: not a valid timestamp"),
+				dexerror.WithPublicData("field", lockedUntilFieldName),
+				dexerror.WithPublicData("value", lockedUntilString),
+			)
 		}
 		lockedUntil = &t
 	}

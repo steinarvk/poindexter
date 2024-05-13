@@ -9,6 +9,18 @@ import (
 	"github.com/steinarvk/poindexter/lib/logging"
 )
 
+var (
+	alwaysExcludedSuffixes = []string{
+		".tmp",
+		".sqlite3",
+		".sqlite3-journal",
+		".sqlite",
+		".sqlite-journal",
+		".yaml",
+		".yml",
+	}
+)
+
 func walkDirectory(ctx context.Context, config DirectoryConfig, output chan<- SyncableFile) (int64, error) {
 	var numProcessed int64
 
@@ -31,13 +43,6 @@ func walkDirectory(ctx context.Context, config DirectoryConfig, output chan<- Sy
 			return nil
 		}
 
-		alwaysExcludedSuffixes := []string{
-			".tmp",
-			".sqlite3",
-			".sqlite",
-			".yaml",
-			".yml",
-		}
 		for _, suffix := range alwaysExcludedSuffixes {
 			if strings.HasSuffix(strings.ToLower(d.Name()), suffix) {
 				logger.Sugar().Infof("skipping file %q even though it is matched by regexp pattern", path)
@@ -51,7 +56,7 @@ func walkDirectory(ctx context.Context, config DirectoryConfig, output chan<- Sy
 			return err
 		}
 
-		logger.Sugar().Infof("checking file %q", fullPath)
+		// logger.Debug("checking file", zap.String("path", fullPath))
 
 		item := SyncableFile{
 			Filename: fullPath,

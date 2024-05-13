@@ -42,12 +42,13 @@ type indexedFlattenedEntry struct {
 }
 
 type InsertionResult struct {
-	Index      RecordIndex
-	RecordUUID uuid.UUID
-	Ok         bool
-	Duplicate  bool
-	Inserted   bool
-	Error      error
+	Index             RecordIndex
+	RecordUUID        uuid.UUID
+	Ok                bool
+	Duplicate         bool
+	HarmlessDuplicate bool
+	Inserted          bool
+	Error             error
 }
 
 type InsertionResultSummary struct {
@@ -344,6 +345,117 @@ func (d *DB) getKeys(ctx context.Context, tx *sql.Tx, namespaceID Namespace, key
 	return kc, nil
 }
 
+func summarizeAsIngestionResponse(ctx context.Context, result []InsertionResult) (*dexapi.IngestionResponse, error) {
+	logger := logging.FromContext(ctx)
+
+	resultsCopy := make([]InsertionResult, len(result))
+	copy(resultsCopy, result)
+
+	sort.Slice(resultsCopy, func(i, j int) bool {
+		return resultsCopy[i].Index < resultsCopy[j].Index
+	})
+
+	var stats dexapi.IngestionStatsResponse
+
+	var ranges []dexapi.IngestionItemRangeStatus
+
+	uuidAsString := func(u uuid.UUID) string {
+		zero := "00000000-0000-0000-0000-000000000000"
+		rv := u.String()
+		if zero == rv {
+			return ""
+		}
+		return rv
+	}
+
+	addToRanges := func(ok bool, errmsg string, index int, firstRecordID uuid.UUID) error {
+		if len(ranges) == 0 {
+			ranges = append(ranges, dexapi.IngestionItemRangeStatus{
+				Index:        index,
+				Count:        1,
+				Ok:           ok,
+				ErrorMessage: errmsg,
+				FirstUUID:    uuidAsString(firstRecordID),
+			})
+			return nil
+		}
+
+		last := &ranges[len(ranges)-1]
+		same := last.Ok == ok && last.ErrorMessage == errmsg
+
+		nextExpectedIndex := last.Index + last.Count
+
+		if index != nextExpectedIndex {
+			return fmt.Errorf("internal error: expected next index %d, got %d", nextExpectedIndex, index)
+		}
+
+		if same {
+			last.Count++
+			return nil
+		}
+
+		ranges = append(ranges, dexapi.IngestionItemRangeStatus{
+			Index:        index,
+			Count:        1,
+			Ok:           ok,
+			ErrorMessage: errmsg,
+			FirstUUID:    uuidAsString(firstRecordID),
+		})
+		return nil
+	}
+
+	for i, r := range resultsCopy {
+		if i != int(r.Index) {
+			return nil, fmt.Errorf("internal error: at [%d] got index %d", i, r.Index)
+		}
+
+		stats.NumProcessed++
+
+		if r.Ok {
+			stats.NumOk++
+		}
+
+		if r.HarmlessDuplicate {
+			stats.NumAlreadyPresent++
+		}
+
+		if r.Duplicate && !r.HarmlessDuplicate {
+			if r.Ok {
+				return nil, fmt.Errorf("internal error: non-harmless duplicate should be an error")
+			}
+			if r.Error == nil {
+				return nil, fmt.Errorf("internal error: non-harmless duplicate should be an error")
+			}
+		}
+
+		if r.Inserted {
+			stats.NumInserted++
+		}
+
+		if r.Error != nil {
+			stats.NumError++
+
+			errmsg := dexerror.AsPoindexterError(r.Error).PublicMessage()
+
+			logger.Debug("error in response", zap.Error(r.Error))
+
+			if err := addToRanges(false, errmsg, i, r.RecordUUID); err != nil {
+				return nil, fmt.Errorf("summarizing response error: %w", err)
+			}
+		} else {
+			if err := addToRanges(r.Ok, "", i, r.RecordUUID); err != nil {
+				return nil, fmt.Errorf("summarizing response error: %w", err)
+			}
+		}
+	}
+
+	return &dexapi.IngestionResponse{
+		Stats:      stats,
+		ItemStatus: ranges,
+		AllOK:      stats.NumProcessed == stats.NumOk,
+	}, nil
+}
+
 func summarize(result []InsertionResult) *BatchInsertionResult {
 	rv := BatchInsertionResult{
 		Results: result,
@@ -408,20 +520,30 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 
 	t0 := time.Now()
 
+	// Guard against duplicates within same batch.
+	// Note that there's probably a bunch of bugs with this, but it would be an error in any case.
+	indicesByUUID := map[uuid.UUID][]RecordIndex{}
+
 	indexByUUID := map[uuid.UUID]RecordIndex{}
 	for _, recordEntry := range recordEntries {
-		indexByUUID[recordEntry.record.RecordUUID] = recordEntry.index
+		id := recordEntry.record.RecordUUID
+		indexByUUID[id] = recordEntry.index
+		indicesByUUID[id] = append(indicesByUUID[id], recordEntry.index)
 	}
 
 	keysRequiredMap := map[string]struct{}{}
 	toInsertRecordIDs := map[uuid.UUID]struct{}{}
 	supersededUUIDs := map[uuid.UUID]struct{}{}
+	toInsertHashes := map[uuid.UUID]string{}
+	toInsertHashesByIndex := map[int]string{}
 	var allRecordIDs []uuid.UUID
 	var allRecordHashes []string
 	for _, recordEntry := range recordEntries {
 		record := recordEntry.record
 		allRecordIDs = append(allRecordIDs, record.RecordUUID)
 		allRecordHashes = append(allRecordHashes, record.Hash)
+		toInsertHashes[record.RecordUUID] = record.Hash
+		toInsertHashesByIndex[int(recordEntry.index)] = record.Hash
 		toInsertRecordIDs[record.RecordUUID] = struct{}{}
 		for _, k := range record.Fields {
 			keysRequiredMap[k] = struct{}{}
@@ -478,6 +600,8 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		}
 	}
 
+	var duplicatesForChecking []uuid.UUID
+
 	// Check for duplicates, to omit them from the batch insert.
 	rows, err := tx.QueryContext(ctx, "SELECT record_id FROM records WHERE namespace_id = $1 AND (record_id = ANY($2) OR record_hash = ANY($3))", nsid, pq.Array(allRecordIDs), pq.Array(allRecordHashes))
 	if err != nil {
@@ -494,106 +618,144 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 			logger.Sugar().Infof("record %v is a duplicate", recordID)
 		}
 
-		results = append(results, InsertionResult{
-			Index:      indexByUUID[recordID],
-			RecordUUID: recordID,
-			Ok:         true,
-			Duplicate:  true,
-		})
+		duplicatesForChecking = append(duplicatesForChecking, recordID)
+
+		for _, index := range indicesByUUID[recordID] {
+			results = append(results, InsertionResult{
+				Index:      index,
+				RecordUUID: recordID,
+				Ok:         true,
+				Duplicate:  true,
+			})
+		}
 		delete(toInsertRecordIDs, recordID)
 	}
 
-	if len(toInsertRecordIDs) == 0 {
-		return results, nil
+	// TODO similar check in the single-record insertion function?
+	if len(duplicatesForChecking) > 0 {
+		logger.Info("need to check for duplicates", zap.Int("num_duplicates", len(duplicatesForChecking)))
+
+		hashesInDB, err := d.getRecordHashes(ctx, tx, nsid, duplicatesForChecking)
+		if err != nil {
+			return nil, fmt.Errorf("error checking for duplicates: %w", err)
+		}
+
+		for i := range results {
+			if !results[i].Duplicate {
+				continue
+			}
+			wantedToInsertHash := toInsertHashesByIndex[int(results[i].Index)]
+			hashInDB := hashesInDB[results[i].RecordUUID]
+			isHarmless := wantedToInsertHash == hashInDB
+
+			if isHarmless {
+				results[i].HarmlessDuplicate = true
+			} else {
+				id := results[i].RecordUUID
+				results[i].Ok = false
+				results[i].Error = dexerror.New(
+					dexerror.WithErrorID("bad_record.reusing_id"),
+					dexerror.WithHTTPCode(http.StatusConflict),
+					dexerror.WithPublicMessage("different record with this ID already exists"),
+					dexerror.WithInternalData("record_id", id.String()),
+					dexerror.WithInternalData("to_insert_hash", hashesInDB[id]),
+					dexerror.WithInternalData("database_hash", hashesInDB[id]),
+				)
+			}
+		}
 	}
 
-	copyRecordsStmt, err := tx.PrepareContext(ctx, pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id"))
-	if err != nil {
-		return nil, fmt.Errorf("error preparing copy records: %w", err)
-	}
+	logger.Info("checked for duplicates, now time to insert records", zap.Int("num_to_insert", len(toInsertRecordIDs)), zap.Int("num_duplicates", len(duplicatesForChecking)), zap.Int("num_results", len(results)))
 
 	var numInsertedRecords, numIndexEntriesInserted int
 
-	for _, entry := range recordEntries {
-		record := entry.record
-
-		_, present := toInsertRecordIDs[record.RecordUUID]
-		if !present {
-			continue
-		}
-
-		if d.options.isVerbose(10) {
-			logger.Sugar().Infof("record %v was successfully inserted", record.RecordUUID)
-		}
-		results = append(results, InsertionResult{
-			Index:      indexByUUID[record.RecordUUID],
-			RecordUUID: record.RecordUUID,
-			Ok:         true,
-			Duplicate:  false,
-			Inserted:   true,
-		})
-
-		_, err := copyRecordsStmt.ExecContext(
-			ctx,
-			nsid,
-			record.RecordUUID,
-			record.Timestamp,
-			record.Hash,
-			record.CanonicalJSON,
-			record.ShapeHash,
-			record.LockedUntil,
-			record.SupersedesUUID,
-		)
+	if len(toInsertRecordIDs) > 0 {
+		copyRecordsStmt, err := tx.PrepareContext(ctx, pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id"))
 		if err != nil {
-			return nil, fmt.Errorf("error copying record: %w", err)
+			return nil, fmt.Errorf("error preparing copy records: %w", err)
 		}
 
-		numInsertedRecords++
-	}
+		for _, entry := range recordEntries {
+			record := entry.record
 
-	if _, err := copyRecordsStmt.ExecContext(ctx); err != nil {
-		return nil, fmt.Errorf("error copying record (flush): %w", err)
-	}
-
-	copyIndexStmt, err := tx.PrepareContext(ctx, pq.CopyIn("indexing_data", "namespace_id", "key_id", "record_id", "value"))
-	if err != nil {
-		return nil, fmt.Errorf("error preparing copy index: %w", err)
-	}
-
-	for _, entry := range recordEntries {
-		record := entry.record
-
-		_, present := toInsertRecordIDs[record.RecordUUID]
-		if !present {
-			continue
-		}
-
-		for _, k := range record.Fields {
-			keyID, ok := keyIDs[k]
-			if !ok {
-				return nil, errors.New("key not found in keyIDs map; internal error")
+			_, present := toInsertRecordIDs[record.RecordUUID]
+			if !present {
+				continue
 			}
 
-			values, hasValue := record.FieldValues[k]
-			if !hasValue {
-				numIndexEntriesInserted++
+			if d.options.isVerbose(10) {
+				logger.Sugar().Infof("record %v was successfully inserted", record.RecordUUID)
+			}
+			results = append(results, InsertionResult{
+				Index:      indexByUUID[record.RecordUUID],
+				RecordUUID: record.RecordUUID,
+				Ok:         true,
+				Duplicate:  false,
+				Inserted:   true,
+			})
 
-				if _, err := copyIndexStmt.ExecContext(ctx, nsid, keyID, record.RecordUUID, nil); err != nil {
-					return nil, fmt.Errorf("error copying index entry: %w", err)
+			_, err := copyRecordsStmt.ExecContext(
+				ctx,
+				nsid,
+				record.RecordUUID,
+				record.Timestamp,
+				record.Hash,
+				record.CanonicalJSON,
+				record.ShapeHash,
+				record.LockedUntil,
+				record.SupersedesUUID,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("error copying record: %w", err)
+			}
+
+			numInsertedRecords++
+		}
+
+		if _, err := copyRecordsStmt.ExecContext(ctx); err != nil {
+			return nil, fmt.Errorf("error copying record (flush): %w", err)
+		}
+
+		copyIndexStmt, err := tx.PrepareContext(ctx, pq.CopyIn("indexing_data", "namespace_id", "key_id", "record_id", "value"))
+		if err != nil {
+			return nil, fmt.Errorf("error preparing copy index: %w", err)
+		}
+
+		for _, entry := range recordEntries {
+			record := entry.record
+
+			_, present := toInsertRecordIDs[record.RecordUUID]
+			if !present {
+				continue
+			}
+
+			for _, k := range record.Fields {
+				keyID, ok := keyIDs[k]
+				if !ok {
+					return nil, errors.New("key not found in keyIDs map; internal error")
 				}
-			} else {
-				for _, value := range values {
+
+				values, hasValue := record.FieldValues[k]
+				if !hasValue {
 					numIndexEntriesInserted++
-					if _, err := copyIndexStmt.ExecContext(ctx, nsid, keyID, record.RecordUUID, string(value)); err != nil {
+
+					if _, err := copyIndexStmt.ExecContext(ctx, nsid, keyID, record.RecordUUID, nil); err != nil {
 						return nil, fmt.Errorf("error copying index entry: %w", err)
+					}
+				} else {
+					for _, value := range values {
+						numIndexEntriesInserted++
+						if _, err := copyIndexStmt.ExecContext(ctx, nsid, keyID, record.RecordUUID, string(value)); err != nil {
+							return nil, fmt.Errorf("error copying index entry: %w", err)
+						}
 					}
 				}
 			}
 		}
-	}
 
-	if _, err := copyIndexStmt.ExecContext(ctx); err != nil {
-		return nil, fmt.Errorf("error copying index (flush): %w", err)
+		if _, err := copyIndexStmt.ExecContext(ctx); err != nil {
+			return nil, fmt.Errorf("error copying index (flush): %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -878,7 +1040,7 @@ func (d *DB) insertFlattenedRecords(ctx context.Context, nsid Namespace, inputCh
 				return err
 			}
 			if len(results) != len(batch) {
-				return fmt.Errorf("internal error: mismatched batch sizes: %d vs %d", len(results), len(batch))
+				return fmt.Errorf("internal error: mismatched batch sizes: sent %d items got %d results", len(batch), len(results))
 			}
 			for _, result := range results {
 				if d.options.isVerbose(100) {
@@ -1120,11 +1282,11 @@ func (d *DB) InsertObject(ctx context.Context, namespaceName string, value inter
 	return &result.RecordUUID, nil
 }
 
-func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, lines []string) (*BatchInsertionResult, error) {
+func (d *DB) InsertFlattenedRecords(ctx context.Context, namespaceName string, lines []string) (*dexapi.IngestionResponse, error) {
 	return d.InsertFlattenedRecordsAsBatch(ctx, namespaceName, lines, "")
 }
 
-func (d *DB) InsertFlattenedRecordsAsBatch(ctx context.Context, namespaceName string, lines []string, batchID string) (*BatchInsertionResult, error) {
+func (d *DB) InsertFlattenedRecordsAsBatch(ctx context.Context, namespaceName string, lines []string, batchID string) (*dexapi.IngestionResponse, error) {
 	logger := logging.FromContext(ctx)
 
 	t0 := time.Now()
@@ -1159,6 +1321,7 @@ func (d *DB) InsertFlattenedRecordsAsBatch(ctx context.Context, namespaceName st
 	}()
 
 	var result []InsertionResult
+
 	if d.options.isVerbose(10) {
 		logger.Sugar().Infof("starting to consume results")
 	}
@@ -1171,6 +1334,7 @@ func (d *DB) InsertFlattenedRecordsAsBatch(ctx context.Context, namespaceName st
 	if d.options.isVerbose(10) {
 		logger.Sugar().Infof("done receiving results")
 	}
+
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Index < result[j].Index
 	})
@@ -1197,18 +1361,50 @@ func (d *DB) InsertFlattenedRecordsAsBatch(ctx context.Context, namespaceName st
 		logger.Info("registering batch processed", zap.String("batch_id", batchID), zap.String("namespace", namespaceName))
 	}
 
-	summary := summarize(result)
+	resp, err := summarizeAsIngestionResponse(ctx, result)
+	if err != nil {
+		logger.Error("error summarizing ingestion response", zap.Error(err))
+		return nil, err
+	}
+
+	resp.Namespace = namespaceName
+
+	if batchID != "" {
+		resp.BatchName = batchID
+	}
 
 	if d.options.isVerbose(1) {
-		numProcessed := summary.Summary.NumProcessed
-		numInserted := summary.Summary.NumInserted
+		numProcessed := resp.Stats.NumProcessed
+		numInserted := resp.Stats.NumInserted
 		duration := time.Since(t0)
 		processedRate := float64(numProcessed) / duration.Seconds()
 		insertedRate := float64(numInserted) / duration.Seconds()
 		logger.Sugar().Infof("inserted %d/%d records in %v (%.2f/s processed, %.2f/s inserted)", numInserted, numProcessed, duration, processedRate, insertedRate)
 	}
 
-	return summary, nil
+	return resp, nil
+}
+
+func (d *DB) getRecordHashes(ctx context.Context, tx *sql.Tx, nsid Namespace, recordIDs []uuid.UUID) (map[uuid.UUID]string, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT record_id, record_hash FROM records WHERE namespace_id = $1 AND record_id = ANY($2)", nsid, pq.Array(recordIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	hashes := map[uuid.UUID]string{}
+	for rows.Next() {
+		var recordID uuid.UUID
+		var recordHash string
+
+		if err := rows.Scan(&recordID, &recordHash); err != nil {
+			return nil, err
+		}
+
+		hashes[recordID] = recordHash
+	}
+
+	return hashes, nil
 }
 
 func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuery, outCh chan<- dexapi.RawRecordItem, options ...RequestOption) error {

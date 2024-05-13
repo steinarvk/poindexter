@@ -335,7 +335,7 @@ func (s *Server) ingestJSONLHandler(namespace string, w http.ResponseWriter, r *
 		}
 	}
 
-	var response *poindexterdb.BatchInsertionResult
+	var response *dexapi.IngestionResponse
 	var err error
 
 	if batchID == "" {
@@ -346,8 +346,6 @@ func (s *Server) ingestJSONLHandler(namespace string, w http.ResponseWriter, r *
 	if err != nil {
 		return err
 	}
-
-	// TODO proper API response
 
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(response)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steinarvk/poindexter/lib/config"
@@ -15,7 +14,6 @@ import (
 	"github.com/steinarvk/poindexter/lib/syncdir"
 	"github.com/steinarvk/poindexter/lib/version"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 func readLinesFromFile(filename string, maxLineLength int) ([]string, error) {
@@ -49,125 +47,73 @@ var (
 	errNotImplemented = fmt.Errorf("not implemented")
 )
 
-func Main() {
-	zapconfig := zap.NewDevelopmentConfig()
-	zapconfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	logger, err := zapconfig.Build()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer logger.Sync()
-
-	zap.ReplaceGlobals(logger)
-
-	var rootCmd = &cobra.Command{Use: "poindexter"}
-
-	var serveCmd = &cobra.Command{
-		Use:   "serve",
-		Short: "Start the server",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return server.Main()
-		},
-	}
-
-	var versionCmd = &cobra.Command{
-		Use:   "version",
-		Short: "Show version information",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			info, err := version.GetInfo()
-			if err != nil {
-				return err
-			}
-
-			if info.CommitHash != "" {
-				dirtyFlag := ""
-				if info.DirtyCommit {
-					dirtyFlag = " (dirty)"
-				}
-				fmt.Printf("Commit:       %s%s\n", info.CommitHash, dirtyFlag)
-				fmt.Printf("Commit time:  %s\n", info.CommitTime)
-			}
-			if info.BinaryHash != "" {
-				fmt.Printf("Binary hash:  %s\n", info.BinaryHash)
-			}
-
-			return nil
-		},
+func mkClientCommandGroup() *cobra.Command {
+	var clientCmds = &cobra.Command{
+		Use:   "client",
+		Short: "Client commands",
 	}
 
 	var syncCmd = &cobra.Command{
 		Use:   "sync",
-		Short: "Sync a file or directory",
+		Short: "Sync a directory",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
+			ctx := context.Background()
+			for _, arg := range args {
+				if err := syncdir.SyncDirFromConfig(ctx, arg); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
+	clientCmds.AddCommand(syncCmd)
 
 	var watchCmd = &cobra.Command{
 		Use:   "watch",
 		Short: "Watch and continually sync a directory",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
+			return syncdir.WatchDirs(context.Background(), args)
 		},
 	}
+	clientCmds.AddCommand(watchCmd)
 
-	var configCmd = &cobra.Command{
-		Use:   "config",
-		Short: "Manage configuration files",
-	}
+	// TODO: config command to list/view client-side config
 
-	var serverCmd = &cobra.Command{
+	// TODO: basic API client
+	// output prettyprinted JSON
+	// Get (by record ID or unique field)
+	// Put (read from stdin, output record ID)
+	// Query (given a friendly-query, output JSON)
+	// List (given a friendly-query, list record IDs)
+	// Hide (i.e. soft-remove)
+	// Override (i.e. soft-update)
+
+	return clientCmds
+}
+
+func mkServerCommandGroup() *cobra.Command {
+	var serverCmds = &cobra.Command{
 		Use:   "server",
-		Short: "Manage server config files",
-	}
-
-	var createServerCmd = &cobra.Command{
-		Use:   "create",
-		Short: "Create a new server config file",
+		Short: "Server commands",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
+			return server.Main()
 		},
 	}
 
-	var addClientCmd = &cobra.Command{
-		Use:   "add-client",
-		Short: "Modify a server config file to add a new client",
+	var runServerCmd = &cobra.Command{
+		Use:   "run",
+		Short: "Run server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
+			return server.Main()
 		},
 	}
-
-	var grantAccessCmd = &cobra.Command{
-		Use:   "grant-access [client] [namespace] [read/write/both]",
-		Short: "Grant access to a client",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
-		},
-	}
-
-	var directoryCmd = &cobra.Command{
-		Use:   "directory",
-		Short: "Create a config file for a syncable directory",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
-		},
-	}
-
-	var listClients = &cobra.Command{
-		Use:   "list-clients",
-		Short: "List clients who have accessed data",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
-		},
-	}
+	serverCmds.AddCommand(runServerCmd)
 
 	var adminCmd = &cobra.Command{
 		Use:   "admin",
 		Short: "Admin commands that connect directly to the database",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented
-		},
 	}
+	serverCmds.AddCommand(adminCmd)
 
 	var statsCmd = &cobra.Command{
 		Use:   "stats",
@@ -233,123 +179,55 @@ func Main() {
 			return nil
 		},
 	}
+	adminCmd.AddCommand(statsCmd)
 
-	var printTestQuerySQLCmd = &cobra.Command{
-		Use:   "print-test-query-sql",
-		Short: "Print a test query SQL",
+	return serverCmds
+}
+
+func Main() {
+	zapconfig := zap.NewDevelopmentConfig()
+	logger, err := zapconfig.Build()
+	if err != nil {
+		log.Fatal(err)
+	}
+	zapconfig.Level.SetLevel(zap.InfoLevel)
+	defer logger.Sync()
+
+	// set logging level to info
+
+	zap.ReplaceGlobals(logger)
+
+	var rootCmd = &cobra.Command{Use: "poindexter"}
+
+	var versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Show version information",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			query, queryargs, err := poindexterdb.BuildTestQuery()
+			info, err := version.GetInfo()
 			if err != nil {
 				return err
 			}
 
-			fmt.Println(query)
-			fmt.Println(queryargs)
+			if info.CommitHash != "" {
+				dirtyFlag := ""
+				if info.DirtyCommit {
+					dirtyFlag = " (dirty)"
+				}
+				fmt.Printf("Commit:       %s%s\n", info.CommitHash, dirtyFlag)
+				fmt.Printf("Commit time:  %s\n", info.CommitTime)
+			}
+			if info.BinaryHash != "" {
+				fmt.Printf("Binary hash:  %s\n", info.BinaryHash)
+			}
 
 			return nil
 		},
 	}
 
-	var syncSingleFileCmd = &cobra.Command{
-		Use:   "syncfile",
-		Short: "Flatten and upload one or more files using direct database access",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			postgresCreds := poindexterdb.PostgresConfig{
-				PostgresHost: os.Getenv("PGHOST"),
-				PostgresUser: os.Getenv("PGUSER"),
-				PostgresDB:   os.Getenv("PGDATABASE"),
-				PostgresPass: os.Getenv("PGPASSWORD"),
-			}
-			params := poindexterdb.Params{
-				Postgres:  postgresCreds,
-				Verbosity: 9,
-			}
+	serverCmds := mkServerCommandGroup()
+	clientCmds := mkClientCommandGroup()
 
-			namespaceName := "main"
-
-			configValue := os.Getenv("POINDEXTER_CONFIG")
-			if configValue == "" {
-				return fmt.Errorf("POINDEXTER_CONFIG environment variable not set")
-			}
-
-			ctx := context.Background()
-
-			cfg, err := config.Load(configValue)
-			if err != nil {
-				return err
-			}
-
-			db, err := poindexterdb.Open(ctx, params, *cfg)
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-
-			maxLineLength := cfg.Limits.MaxBytesPerRecord + 1
-
-			t00 := time.Now()
-			var totalProcessed int64
-			var totalInserted int64
-			var totalError int64
-
-			for i, filename := range args {
-				t0 := time.Now()
-
-				lines, err := readLinesFromFile(filename, maxLineLength)
-				if err != nil {
-					return fmt.Errorf("error reading files from %q: %w", filename, err)
-				}
-
-				if i > 0 {
-					totalTimeSoFar := time.Since(t00)
-					processingRateSoFar := float64(totalProcessed) / totalTimeSoFar.Seconds()
-					estimatedTimeToProcessFile := float64(len(lines)) / processingRateSoFar
-					zap.L().Sugar().Infof("processing rate so far: %.2f/sec estimated time to process file %q: %.2fs", processingRateSoFar, filename, estimatedTimeToProcessFile)
-				}
-
-				result, err := db.InsertFlattenedRecords(ctx, namespaceName, lines)
-				if err != nil {
-					return fmt.Errorf("error inserting records from %q: %w", filename, err)
-				}
-
-				duration := time.Since(t0)
-				summary := result.Summary
-
-				zap.L().Sugar().Infof("processed %d entries from %q in %s: %+v", len(lines), filename, duration, summary)
-				totalProcessed += int64(len(lines))
-				totalInserted += int64(summary.NumInserted)
-				totalError += int64(summary.NumError)
-			}
-
-			totalDuration := time.Since(t00)
-			processingRate := float64(totalProcessed) / totalDuration.Seconds()
-			zap.L().Sugar().Infof("processed %d entries in %s: %d inserted, %d errors, %.2f/s", totalProcessed, totalDuration, totalInserted, totalError, processingRate)
-
-			return nil
-		},
-	}
-
-	var scratchCmd = &cobra.Command{
-		Use:   "scratch",
-		Short: "Unstable commands to test functionality",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			for _, arg := range args {
-				if err := syncdir.SyncDirFromConfig(ctx, arg); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	}
-
-	rootCmd.AddCommand(serveCmd, syncCmd, configCmd, adminCmd, scratchCmd)
-	configCmd.AddCommand(serverCmd, directoryCmd)
-	syncCmd.AddCommand(watchCmd)
-	serverCmd.AddCommand(createServerCmd, addClientCmd, grantAccessCmd)
-	adminCmd.AddCommand(listClients, statsCmd)
-	scratchCmd.AddCommand(syncSingleFileCmd, printTestQuerySQLCmd)
-	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(serverCmds, clientCmds, versionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
