@@ -2,23 +2,26 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/steinarvk/poindexter/lib/config"
 	"github.com/steinarvk/poindexter/lib/dexclient"
+	"github.com/steinarvk/poindexter/lib/flatten"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
 	"github.com/steinarvk/poindexter/lib/server"
 	"github.com/steinarvk/poindexter/lib/syncdir"
 	"github.com/steinarvk/poindexter/lib/version"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 )
 
 func readLinesFromFile(filename string, maxLineLength int) ([]string, error) {
@@ -126,17 +129,11 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 		Use:   "get [namespace] [ID-or-field] [field-value]?",
 		Short: "Get a record",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 2 {
-				return errors.New("expected exactly two arguments")
+			if len(args) != 2 && len(args) != 3 {
+				return fmt.Errorf("expected 2 or 3 arguments; got %d", len(args))
 			}
 
 			namespace := args[0]
-			recordID := args[1]
-
-			recordUUID, err := uuid.Parse(recordID)
-			if err != nil {
-				return fmt.Errorf("ID %q is not a valid UUID: %w", recordID, err)
-			}
 
 			client, err := getClient(ctx, dexclient.Selector{
 				Namespace:   namespace,
@@ -146,12 +143,35 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 				return err
 			}
 
-			req, err := client.NewRequest(ctx, "GET", fmt.Sprintf("/query/%s/records/%s/", namespace, recordUUID.String()))
-			if err != nil {
-				return err
+			var request *dexclient.Request
+
+			if len(args) == 2 {
+				recordID := args[1]
+
+				recordUUID, err := uuid.Parse(recordID)
+				if err != nil {
+					return fmt.Errorf("ID %q is not a valid UUID: %w", recordID, err)
+				}
+
+				req, err := client.NewRequest(ctx, "GET", fmt.Sprintf("/query/%s/records/%s/", namespace, recordUUID.String()))
+				if err != nil {
+					return err
+				}
+
+				request = req
+			} else {
+				fieldName := args[1]
+				fieldValue := args[2]
+
+				req, err := client.NewRequest(ctx, "GET", fmt.Sprintf("/query/%s/records/by/%s/%s/", namespace, fieldName, fieldValue))
+				if err != nil {
+					return err
+				}
+
+				request = req
 			}
 
-			resp, err := client.Do(ctx, req)
+			resp, err := client.Do(ctx, request)
 			if err != nil {
 				return err
 			}
@@ -179,10 +199,121 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 	}
 	clientCmds.AddCommand(getCmd)
 
+	readFromStdin := func() ([]byte, error) {
+		hasGottenData := false
+
+		readStdin := func() ([]byte, error) {
+			// First read a single byte
+			buf := bytes.NewBuffer(nil)
+			_, err := io.CopyN(buf, os.Stdin, 1)
+			if err != nil {
+				return nil, err
+			}
+
+			hasGottenData = true
+
+			// Then read the rest
+			_, err = io.Copy(buf, os.Stdin)
+			if err != nil {
+				return nil, err
+			}
+
+			return buf.Bytes(), nil
+		}
+
+		time.AfterFunc(5*time.Second, func() {
+			if !hasGottenData {
+				fmt.Fprintln(os.Stderr, ":: Waiting for input on stdin...")
+			}
+		})
+
+		return readStdin()
+	}
+
+	putCmd := &cobra.Command{
+		Use:   "put [namespace]",
+		Short: "Put a record from stdin",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("expected 1 argument; got %d", len(args))
+			}
+
+			namespace := args[0]
+
+			data, err := readFromStdin()
+			if err != nil {
+				return err
+			}
+
+			var record map[string]interface{}
+			if err := yaml.Unmarshal(data, &record); err != nil {
+				return err
+			}
+
+			flattener := flatten.DefaultFlattener()
+
+			_, err = flattener.FlattenObject(record)
+
+			if err == flatten.ErrRecordHasNoID {
+				record["id"] = uuid.New().String()
+				_, err = flattener.FlattenObject(record)
+			}
+
+			if err == flatten.ErrRecordHasNoTimestamp {
+				record["timestamp"] = float64(time.Now().UnixNano()) / 1e9
+				_, err = flattener.FlattenObject(record)
+			}
+
+			if err != nil {
+				return err
+			}
+
+			marshalled, err := json.Marshal(record)
+			if err != nil {
+				return err
+			}
+
+			client, err := getClient(ctx, dexclient.Selector{
+				Namespace:   namespace,
+				AccessGroup: "ingest",
+			})
+			if err != nil {
+				return err
+			}
+
+			req, err := client.NewRequest(ctx, "POST", fmt.Sprintf("/ingest/%s/record/", namespace))
+			if err != nil {
+				return err
+			}
+
+			buf := bytes.NewBuffer(marshalled)
+			req.Request.Body = io.NopCloser(buf)
+
+			resp, err := client.Do(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			var response map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+				return err
+			}
+
+			marshalled, err = json.MarshalIndent(response, "", "  ")
+			if err != nil {
+				return err
+			}
+
+			os.Stdout.Write(marshalled)
+			os.Stdout.Write([]byte("\n"))
+
+			return nil
+		},
+	}
+	clientCmds.AddCommand(putCmd)
+
 	// TODO: basic API client
 	// output prettyprinted JSON
-	// Get (by record ID or unique field)
-	// Put (read from stdin, output record ID)
 	// Query (given a friendly-query, output JSON)
 	// List (given a friendly-query, list record IDs)
 	// Hide (i.e. soft-remove)

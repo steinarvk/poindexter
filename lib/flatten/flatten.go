@@ -30,13 +30,13 @@ var (
 		dexerror.WithInternalMessage("unknown flattening error"),
 	)
 
-	errRecordHasNoID = dexerror.New(
+	ErrRecordHasNoID = dexerror.New(
 		dexerror.WithErrorID("bad_record.missing_id"),
 		dexerror.WithHTTPCode(400),
 		dexerror.WithPublicMessage("bad record: no ID field"),
 	)
 
-	errRecordHasNoTimestamp = dexerror.New(
+	ErrRecordHasNoTimestamp = dexerror.New(
 		dexerror.WithErrorID("bad_record.missing_timestamp"),
 		dexerror.WithHTTPCode(400),
 		dexerror.WithPublicMessage("bad record: no record timestamp field"),
@@ -142,6 +142,18 @@ type Flattener struct {
 	AcceptMissingID           bool
 	AcceptMissingTimestamp    bool
 	IgnoreNoIndex             bool
+}
+
+func DefaultFlattener() *Flattener {
+	return &Flattener{
+		MaxSerializedLength:       1 << 20,
+		MaxExploredObjectElements: 1000,
+		MaxTotalFields:            1000,
+		MaxCapturedValueLength:    1 << 20,
+		AcceptMissingID:           false,
+		AcceptMissingTimestamp:    false,
+		IgnoreNoIndex:             false,
+	}
 }
 
 type Record struct {
@@ -529,7 +541,7 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 		recordUUID = parsed
 	} else {
 		if !f.AcceptMissingID {
-			return nil, errRecordHasNoID
+			return nil, ErrRecordHasNoID
 		}
 		recordUUID = uuid.New()
 	}
@@ -551,7 +563,7 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 		recordTimestamp = t
 	} else {
 		if !f.AcceptMissingTimestamp {
-			return nil, errRecordHasNoTimestamp
+			return nil, ErrRecordHasNoTimestamp
 		}
 		recordTimestamp = time.Now()
 	}
