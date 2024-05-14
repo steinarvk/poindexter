@@ -620,6 +620,130 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 	}
 	clientCmds.AddCommand(overrideCmd)
 
+	queryFieldsCmd := &cobra.Command{
+		Use:   "fields [namespace]",
+		Short: "List indexed fields matching a certain query",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("expected 1 argument; got %d", len(args))
+			}
+
+			namespace := args[0]
+
+			query, err := readFriendlyQueryFromStdin()
+			if err != nil {
+				return err
+			}
+
+			marshalled, err := json.Marshal(query)
+			if err != nil {
+				return err
+			}
+
+			client, err := getClient(ctx, dexclient.Selector{
+				Namespace:   namespace,
+				AccessGroup: "query",
+			})
+			if err != nil {
+				return err
+			}
+
+			req, err := client.NewRequest(ctx, "POST", fmt.Sprintf("/query/%s/fields/", namespace))
+			if err != nil {
+				return err
+			}
+
+			buf := bytes.NewBuffer(marshalled)
+			req.Request.Body = io.NopCloser(buf)
+
+			resp, err := client.Do(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			var response dexapi.QueryFieldsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+				return err
+			}
+
+			for _, field := range response.Fields {
+				if field.Count == nil {
+					fmt.Printf("%s\n", field.Field)
+				} else {
+					fmt.Printf("%d\t%s\n", *field.Count, field.Field)
+				}
+			}
+			return nil
+		},
+	}
+	clientCmds.AddCommand(queryFieldsCmd)
+
+	queryValuesCmd := &cobra.Command{
+		Use:   "values [namespace] [field-name]",
+		Short: "List indexed values matching a certain query",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("expected 2 arguments; got %d", len(args))
+			}
+
+			namespace := args[0]
+			fieldName := args[1]
+
+			query, err := readFriendlyQueryFromStdin()
+			if err != nil {
+				return err
+			}
+
+			marshalled, err := json.Marshal(query)
+			if err != nil {
+				return err
+			}
+
+			client, err := getClient(ctx, dexclient.Selector{
+				Namespace:   namespace,
+				AccessGroup: "query",
+			})
+			if err != nil {
+				return err
+			}
+
+			req, err := client.NewRequest(ctx, "POST", fmt.Sprintf("/query/%s/values/%s/", namespace, fieldName))
+			if err != nil {
+				return err
+			}
+
+			buf := bytes.NewBuffer(marshalled)
+			req.Request.Body = io.NopCloser(buf)
+
+			resp, err := client.Do(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			var response dexapi.QueryFieldsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+				return err
+			}
+
+			for _, field := range response.Fields {
+				if field.Count == nil {
+					fmt.Printf("%s\n", field.Field)
+				} else {
+					fmt.Printf("%d\t%s\n", *field.Count, field.Field)
+				}
+				for _, value := range field.Values {
+					if value.Count == nil {
+						fmt.Printf("  %s\n", value.Value)
+					} else {
+						fmt.Printf("  %d\t%s\n", *value.Count, value.Value)
+					}
+				}
+			}
+			return nil
+		},
+	}
+	clientCmds.AddCommand(queryValuesCmd)
+
 	return clientCmds
 }
 
