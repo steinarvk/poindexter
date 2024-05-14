@@ -14,12 +14,14 @@ type RawQuery struct {
 
 type QueryOptions struct {
 	OmitSuperseded     bool
+	OmitHidden         bool
 	OmitLocked         bool
 	TreatNullsAsAbsent bool
 }
 
 type QueryOptionalOptions struct {
 	OmitSuperseded     *bool `json:"omit_superseded"`
+	OmitHidden         *bool `json:"omit_hidden"`
 	OmitLocked         *bool `json:"omit_locked"`
 	TreatNullsAsAbsent *bool `json:"treat_nulls_as_absent"`
 }
@@ -50,11 +52,15 @@ type Query struct {
 func (q Query) GetOptions() QueryOptions {
 	opts := QueryOptions{
 		OmitSuperseded:     true,
+		OmitHidden:         true,
 		OmitLocked:         false,
 		TreatNullsAsAbsent: true,
 	}
 	if q.OmitSuperseded != nil {
 		opts.OmitSuperseded = *q.OmitSuperseded
+	}
+	if q.OmitHidden != nil {
+		opts.OmitHidden = *q.OmitHidden
 	}
 	if q.OmitLocked != nil {
 		opts.OmitLocked = *q.OmitLocked

@@ -9,11 +9,14 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/steinarvk/poindexter/lib/config"
+	"github.com/steinarvk/poindexter/lib/dexapi"
 	"github.com/steinarvk/poindexter/lib/dexclient"
 	"github.com/steinarvk/poindexter/lib/flatten"
 	"github.com/steinarvk/poindexter/lib/poindexterdb"
@@ -230,6 +233,27 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 		return readStdin()
 	}
 
+	readFriendlyQueryFromStdin := func() (map[string]interface{}, error) {
+		data, err := readFromStdin()
+		if err != nil {
+			return nil, err
+		}
+
+		var rv map[string]interface{}
+
+		if err := yaml.Unmarshal(data, &rv); err != nil {
+			return nil, err
+		}
+
+		if _, present := rv["filter"]; !present {
+			rv = map[string]interface{}{
+				"filter": rv,
+			}
+		}
+
+		return rv, nil
+	}
+
 	putCmd := &cobra.Command{
 		Use:   "put [namespace]",
 		Short: "Put a record from stdin",
@@ -312,12 +336,289 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 	}
 	clientCmds.AddCommand(putCmd)
 
-	// TODO: basic API client
-	// output prettyprinted JSON
-	// Query (given a friendly-query, output JSON)
-	// List (given a friendly-query, list record IDs)
-	// Hide (i.e. soft-remove)
-	// Override (i.e. soft-update)
+	listCmd := &cobra.Command{
+		Use:   "list [namespace]",
+		Short: "List records; reading a query from stdin",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("expected 1 argument; got %d", len(args))
+			}
+
+			namespace := args[0]
+
+			query, err := readFriendlyQueryFromStdin()
+			if err != nil {
+				return err
+			}
+
+			marshalled, err := json.Marshal(query)
+			if err != nil {
+				return err
+			}
+
+			client, err := getClient(ctx, dexclient.Selector{
+				Namespace:   namespace,
+				AccessGroup: "query",
+			})
+			if err != nil {
+				return err
+			}
+
+			req, err := client.NewRequest(ctx, "POST", fmt.Sprintf("/query/%s/records/", namespace))
+			if err != nil {
+				return err
+			}
+
+			buf := bytes.NewBuffer(marshalled)
+			req.Request.Body = io.NopCloser(buf)
+
+			resp, err := client.Do(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			var response dexapi.QueryRecordsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+				return err
+			}
+
+			for _, rec := range response.Records {
+				fmt.Println(rec.RecordID)
+			}
+
+			return nil
+		},
+	}
+	clientCmds.AddCommand(listCmd)
+
+	queryCmd := &cobra.Command{
+		Use:   "query [namespace]",
+		Short: "Query records; reading a query from stdin",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("expected 1 argument; got %d", len(args))
+			}
+
+			namespace := args[0]
+
+			query, err := readFriendlyQueryFromStdin()
+			if err != nil {
+				return err
+			}
+
+			marshalled, err := json.Marshal(query)
+			if err != nil {
+				return err
+			}
+
+			client, err := getClient(ctx, dexclient.Selector{
+				Namespace:   namespace,
+				AccessGroup: "query",
+			})
+			if err != nil {
+				return err
+			}
+
+			req, err := client.NewRequest(ctx, "POST", fmt.Sprintf("/query/%s/records/", namespace))
+			if err != nil {
+				return err
+			}
+
+			buf := bytes.NewBuffer(marshalled)
+			req.Request.Body = io.NopCloser(buf)
+
+			resp, err := client.Do(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			var response dexapi.QueryRecordsResponse
+			if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+				return err
+			}
+
+			prettyprinted, err := json.MarshalIndent(response, "", "  ")
+			if err != nil {
+				return err
+			}
+
+			os.Stdout.Write(prettyprinted)
+			os.Stdout.WriteString("\n")
+
+			return nil
+		},
+	}
+	clientCmds.AddCommand(queryCmd)
+
+	hideCmd := &cobra.Command{
+		Use:   "hide [namespace] [ID]",
+		Short: "Hide (soft-delete) a record",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("expected 2 arguments; got %d", len(args))
+			}
+
+			namespace := args[0]
+
+			recordID := args[1]
+
+			recordUUID, err := uuid.Parse(recordID)
+			if err != nil {
+				return fmt.Errorf("ID %q is not a valid UUID: %w", recordID, err)
+			}
+
+			putRequest := map[string]interface{}{
+				"record_id":        uuid.New().String(),
+				"supersedes_id":    recordUUID.String(),
+				"timestamp":        float64(time.Now().UnixNano()) / 1e9,
+				"_deletion_marker": true,
+			}
+
+			marshalled, err := json.Marshal(putRequest)
+			if err != nil {
+				return err
+			}
+
+			client, err := getClient(ctx, dexclient.Selector{
+				Namespace:   namespace,
+				AccessGroup: "ingest",
+			})
+			if err != nil {
+				return err
+			}
+
+			req, err := client.NewRequest(ctx, "POST", fmt.Sprintf("/ingest/%s/record/", namespace))
+			if err != nil {
+				return err
+			}
+
+			buf := bytes.NewBuffer(marshalled)
+			req.Request.Body = io.NopCloser(buf)
+
+			if _, err := client.Do(ctx, req); err != nil {
+				return err
+			}
+
+			return nil
+		},
+	}
+	clientCmds.AddCommand(hideCmd)
+
+	overrideCmd := &cobra.Command{
+		Use:   "override [namespace] [id]",
+		Short: "Override a record with a superseding one",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("expected 2 arguments; got %d", len(args))
+			}
+
+			namespace := args[0]
+
+			recordID := args[1]
+
+			recordUUID, err := uuid.Parse(recordID)
+			if err != nil {
+				return fmt.Errorf("ID %q is not a valid UUID: %w", recordID, err)
+			}
+
+			data, err := readFromStdin()
+			if err != nil {
+				return err
+			}
+
+			var record map[string]interface{}
+			if err := yaml.Unmarshal(data, &record); err != nil {
+				return err
+			}
+
+			var keys []string
+			for k := range record {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			recordWrapperKeys := []string{"namespace", "record", "record_id", "timestamp", "timestamp_unix_nano"}
+			sort.Strings(recordWrapperKeys)
+			if slices.Equal(keys, recordWrapperKeys) {
+				recordCore, ok := record["record"].(map[string]interface{})
+				if !ok {
+					return fmt.Errorf("expected record to be a map[string]interface{}")
+				}
+
+				for _, f := range flatten.ValidIDFieldNames() {
+					// TODO check it's actually the same one?
+					delete(recordCore, f)
+				}
+
+				for _, f := range flatten.ValidTimestampFieldNames() {
+					delete(recordCore, f)
+				}
+
+				record = recordCore
+			}
+
+			flattener := flatten.DefaultFlattener()
+
+			_, err = flattener.FlattenObject(record)
+
+			if err == flatten.ErrRecordHasNoID {
+				record["id"] = uuid.New().String()
+				_, err = flattener.FlattenObject(record)
+			}
+
+			if err == flatten.ErrRecordHasNoTimestamp {
+				record["timestamp"] = float64(time.Now().UnixNano()) / 1e9
+				_, err = flattener.FlattenObject(record)
+			}
+
+			record["supersedes_id"] = recordUUID.String()
+
+			if err != nil {
+				return err
+			}
+
+			marshalled, err := json.Marshal(record)
+			if err != nil {
+				return err
+			}
+
+			client, err := getClient(ctx, dexclient.Selector{
+				Namespace:   namespace,
+				AccessGroup: "ingest",
+			})
+			if err != nil {
+				return err
+			}
+
+			req, err := client.NewRequest(ctx, "POST", fmt.Sprintf("/ingest/%s/record/", namespace))
+			if err != nil {
+				return err
+			}
+
+			buf := bytes.NewBuffer(marshalled)
+			req.Request.Body = io.NopCloser(buf)
+
+			resp, err := client.Do(ctx, req)
+			if err != nil {
+				return err
+			}
+
+			var response map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+				return err
+			}
+
+			marshalled, err = json.MarshalIndent(response, "", "  ")
+			if err != nil {
+				return err
+			}
+
+			os.Stdout.Write(marshalled)
+			os.Stdout.Write([]byte("\n"))
+
+			return nil
+		},
+	}
+	clientCmds.AddCommand(overrideCmd)
 
 	return clientCmds
 }

@@ -118,6 +118,14 @@ var validTimestampFieldNames = []string{
 	"time",
 }
 
+func ValidIDFieldNames() []string {
+	return validIDFieldNames
+}
+
+func ValidTimestampFieldNames() []string {
+	return validTimestampFieldNames
+}
+
 var supersedesFieldName string = "supersedes_id"
 var lockedUntilFieldName string = "locked_until"
 

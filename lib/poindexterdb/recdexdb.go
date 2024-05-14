@@ -1434,6 +1434,12 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		}
 	}
 
+	if q.OmitHidden {
+		if err := qb.setOmitHidden(); err != nil {
+			return err
+		}
+	}
+
 	if q.TimestampStart != nil {
 		if err := qb.setTimestampStartFilterInclusive(*q.TimestampStart); err != nil {
 			return err
@@ -1677,6 +1683,10 @@ func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fiel
 	qb.limit = 2
 
 	if err := qb.setOmitSuperseded(); err != nil {
+		return nil, err
+	}
+
+	if err := qb.setOmitHidden(); err != nil {
 		return nil, err
 	}
 

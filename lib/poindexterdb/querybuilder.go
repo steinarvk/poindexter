@@ -1,7 +1,6 @@
 package poindexterdb
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -80,7 +79,7 @@ func (qb *queryBuilder) addTimestampFilter(t0, t1 *time.Time) {
 	}
 }
 
-func (qb *queryBuilder) addJoinForKeyName(keyName string) (string, error) {
+func (qb *queryBuilder) addInnerJoinForKeyName(keyName string) (string, error) {
 	alias, ok := qb.keyNameToKeyTableAlias[keyName]
 	if ok {
 		return alias, nil
@@ -103,8 +102,8 @@ func (qb *queryBuilder) addJoinForKeyName(keyName string) (string, error) {
 	return alias, nil
 }
 
-func (qb *queryBuilder) addJoinForKeyValue(keyName string) (string, error) {
-	keyNameAlias, err := qb.addJoinForKeyName(keyName)
+func (qb *queryBuilder) addInnerJoinForKeyValue(keyName string) (string, error) {
+	keyNameAlias, err := qb.addInnerJoinForKeyName(keyName)
 	if err != nil {
 		return "", err
 	}
@@ -133,8 +132,60 @@ func (qb *queryBuilder) addJoinForKeyValue(keyName string) (string, error) {
 	return alias, nil
 }
 
+func (qb *queryBuilder) addOuterJoinForKeyName(keyName string) (string, error) {
+	alias, ok := qb.keyNameToKeyTableAlias[keyName]
+	if ok {
+		return alias, nil
+	}
+
+	n := len(qb.keyNameToKeyTableAlias) + 1
+	alias = fmt.Sprintf("k%d", n)
+	qb.keyNameToKeyTableAlias[keyName] = alias
+
+	argName := qb.addArg(keyName)
+
+	qb.joinClauses = append(qb.joinClauses, fmt.Sprintf(
+		"LEFT OUTER JOIN indexing_keys AS %s ON (%s.namespace_id = %s AND %s.key_name = %s)",
+		alias,
+		alias,
+		qb.namespaceArgName,
+		alias, argName,
+	))
+
+	return alias, nil
+}
+
+func (qb *queryBuilder) addOuterJoinForKeyValue(keyName string) (string, error) {
+	keyNameAlias, err := qb.addOuterJoinForKeyName(keyName)
+	if err != nil {
+		return "", err
+	}
+
+	alias, ok := qb.keyNameToDataTableAlias[keyName]
+	if ok {
+		return alias, nil
+	}
+
+	n := len(qb.keyNameToDataTableAlias) + 1
+	alias = fmt.Sprintf("d%d", n)
+	qb.keyNameToDataTableAlias[keyName] = alias
+
+	qb.joinClauses = append(qb.joinClauses, fmt.Sprintf(
+		"LEFT OUTER JOIN indexing_data AS %s "+
+			"ON (%s.namespace_id = %s AND "+
+			"records.record_id = %s.record_id AND "+
+			"%s.key_id = %s.key_id)",
+		alias,
+		alias,
+		qb.namespaceArgName,
+		alias, keyNameAlias, alias,
+	))
+
+	return alias, nil
+}
+
 func (qb *queryBuilder) addFieldPresent(keyName string) error {
-	_, err := qb.addJoinForKeyValue(keyName)
+	_, err := qb.addInnerJoinForKeyValue(keyName)
 	if err != nil {
 		return err
 	}
@@ -143,7 +194,7 @@ func (qb *queryBuilder) addFieldPresent(keyName string) error {
 }
 
 func (qb *queryBuilder) addFieldPresentAndNotNull(keyName string) error {
-	alias, err := qb.addJoinForKeyValue(keyName)
+	alias, err := qb.addInnerJoinForKeyValue(keyName)
 	if err != nil {
 		return err
 	}
@@ -159,7 +210,7 @@ func (qb *queryBuilder) addFieldPresentAndNotNull(keyName string) error {
 }
 
 func (qb *queryBuilder) addFieldHasValue(keyName string, canonicalizedValue string) error {
-	alias, err := qb.addJoinForKeyValue(keyName)
+	alias, err := qb.addInnerJoinForKeyValue(keyName)
 	if err != nil {
 		return err
 	}
@@ -194,30 +245,40 @@ func (qb *queryBuilder) buildQuery() (string, []interface{}, error) {
 	return query, qb.args, nil
 }
 
-func BuildTestQuery() (string, []interface{}, error) {
-	qb := newQueryBuilder(1)
-
-	if err := qb.addFieldPresent(".artifact"); err != nil {
-		return "", nil, err
-	}
-
-	if err := qb.addFieldHasValue(".artifact.ok", "true"); err != nil {
-		return "", nil, err
-	}
-
-	return qb.buildQuery()
-}
-
 func (qb *queryBuilder) addNegatedFieldPresentAndNotNull(keyName string) error {
-	return errors.New("negations not yet implemented TODO")
+	alias, err := qb.addOuterJoinForKeyValue(keyName)
+	if err != nil {
+		return err
+	}
+
+	qb.whereClauses = append(qb.whereClauses,
+		fmt.Sprintf("NOT (%s.value IS NULL OR %s.value != 'null')", alias, alias))
+
+	return err
 }
 
 func (qb *queryBuilder) addNegatedFieldPresent(keyName string) error {
-	return errors.New("negations not yet implemented TODO")
+	alias, err := qb.addOuterJoinForKeyName(keyName)
+	if err != nil {
+		return err
+	}
+
+	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s.key_name IS NULL", alias))
+
+	return err
 }
 
 func (qb *queryBuilder) addNegatedFieldHasValue(keyName string, canonicalizedValue string) error {
-	return errors.New("negations not yet implemented TODO")
+	alias, err := qb.addOuterJoinForKeyValue(keyName)
+	if err != nil {
+		return err
+	}
+
+	argname := qb.addArg(canonicalizedValue)
+
+	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("(%s.value IS NULL OR %s.value != %s)", alias, alias, argname))
+
+	return nil
 }
 
 func (qb *queryBuilder) setOrderBy(orderBy dexapi.OrderBy) error {
@@ -244,6 +305,10 @@ func (qb *queryBuilder) setOrderBy(orderBy dexapi.OrderBy) error {
 	qb.orderClause = prefix + " " + suffix
 
 	return nil
+}
+
+func (qb *queryBuilder) setOmitHidden() error {
+	return qb.addNegatedFieldHasValue("._deletion_marker", "true")
 }
 
 func (qb *queryBuilder) setOmitSuperseded() error {
