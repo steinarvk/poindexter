@@ -1407,9 +1407,86 @@ func (d *DB) getRecordHashes(ctx context.Context, tx *sql.Tx, nsid Namespace, re
 	return hashes, nil
 }
 
-func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuery, outCh chan<- dexapi.RawRecordItem, options ...RequestOption) error {
-	logger := logging.FromContext(ctx)
+func (d *DB) buildQuery(ctx context.Context, nsid Namespace, q *CompiledQuery) (*queryBuilder, error) {
+	qb := newQueryBuilder((nsid))
 
+	if q.OmitLocked {
+		return nil, fmt.Errorf("not yet supported (TODO): omit_locked")
+	}
+
+	if q.OmitSuperseded {
+		if err := qb.setOmitSuperseded(); err != nil {
+			return nil, err
+		}
+	}
+
+	if q.OmitHidden {
+		if err := qb.setOmitHidden(); err != nil {
+			return nil, err
+		}
+	}
+
+	if q.TimestampStart != nil {
+		if err := qb.setTimestampStartFilterInclusive(*q.TimestampStart); err != nil {
+			return nil, err
+		}
+	}
+
+	if q.TimestampEnd != nil {
+		if err := qb.setTimestampEndFilterExclusive(*q.TimestampEnd); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, key := range q.Filter.FieldsPresent {
+		if q.TreatNullsAsAbsent {
+			if err := qb.addFieldPresentAndNotNull(key); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := qb.addFieldPresent(key); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for key, values := range q.Filter.FieldValues {
+		for _, value := range values {
+			if err := qb.addFieldHasValue(key, value); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for _, key := range q.Exclude.FieldsPresent {
+		if q.TreatNullsAsAbsent {
+			if err := qb.addNegatedFieldPresentAndNotNull(key); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := qb.addNegatedFieldPresent(key); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for key, values := range q.Exclude.FieldValues {
+		for _, value := range values {
+			if err := qb.addNegatedFieldHasValue(key, value); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if err := qb.setOrderBy(q.OrderBy); err != nil {
+		return nil, err
+	}
+
+	return qb, nil
+
+}
+
+func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuery, outCh chan<- dexapi.RawRecordItem, options ...RequestOption) error {
 	opts := requestOptions{}
 	for _, o := range options {
 		if err := o(&opts); err != nil {
@@ -1422,77 +1499,8 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		return err
 	}
 
-	qb := newQueryBuilder((nsid))
-
-	if q.OmitLocked {
-		return fmt.Errorf("not yet supported (TODO): omit_locked")
-	}
-
-	if q.OmitSuperseded {
-		if err := qb.setOmitSuperseded(); err != nil {
-			return err
-		}
-	}
-
-	if q.OmitHidden {
-		if err := qb.setOmitHidden(); err != nil {
-			return err
-		}
-	}
-
-	if q.TimestampStart != nil {
-		if err := qb.setTimestampStartFilterInclusive(*q.TimestampStart); err != nil {
-			return err
-		}
-	}
-
-	if q.TimestampEnd != nil {
-		if err := qb.setTimestampEndFilterExclusive(*q.TimestampEnd); err != nil {
-			return err
-		}
-	}
-
-	for _, key := range q.Filter.FieldsPresent {
-		if q.TreatNullsAsAbsent {
-			if err := qb.addFieldPresentAndNotNull(key); err != nil {
-				return err
-			}
-		} else {
-			if err := qb.addFieldPresent(key); err != nil {
-				return err
-			}
-		}
-	}
-
-	for key, values := range q.Filter.FieldValues {
-		for _, value := range values {
-			if err := qb.addFieldHasValue(key, value); err != nil {
-				return err
-			}
-		}
-	}
-
-	for _, key := range q.Exclude.FieldsPresent {
-		if q.TreatNullsAsAbsent {
-			if err := qb.addNegatedFieldPresentAndNotNull(key); err != nil {
-				return err
-			}
-		} else {
-			if err := qb.addNegatedFieldPresent(key); err != nil {
-				return err
-			}
-		}
-	}
-
-	for key, values := range q.Exclude.FieldValues {
-		for _, value := range values {
-			if err := qb.addNegatedFieldHasValue(key, value); err != nil {
-				return err
-			}
-		}
-	}
-
-	if err := qb.setOrderBy(q.OrderBy); err != nil {
+	qb, err := d.buildQuery(ctx, nsid, q)
+	if err != nil {
 		return err
 	}
 
@@ -1504,26 +1512,7 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		return err
 	}
 
-	logger.Sugar().Infof("executing query with arguments %v: query %s", queryArgs, queryString)
-
-	executeQueryTwiceAndExplain := opts.debug
-	if executeQueryTwiceAndExplain {
-		rows, err := d.db.QueryContext(ctx, "EXPLAIN ANALYZE "+queryString, queryArgs...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var explainLine string
-			if err := rows.Scan(&explainLine); err != nil {
-				return err
-			}
-			logger.Sugar().Infof("explain analyze: %s", explainLine)
-		}
-
-		rows.Close()
-	}
-
-	rows, err := d.db.QueryContext(ctx, queryString, queryArgs...)
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
 	if err != nil {
 		return err
 	}
@@ -1670,7 +1659,60 @@ func (d *DB) CheckBatch(ctx context.Context, namespaceName string, batchName str
 	return true, nil
 }
 
-func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fieldName string, canonicalizedFieldValue string) (*dexapi.RecordItem, error) {
+func (d *DB) executeQueryRows(ctx context.Context, queryString string, queryArgs []interface{}, safeTwice bool, opts requestOptions) (*sql.Rows, error) {
+	logger := logging.FromContext(ctx)
+
+	wrapErr := func(err error) error {
+		return dexerror.New(
+			dexerror.WithErrorID("postgres.query_error"),
+			dexerror.WithPublicMessage("internal error: error executing database query"),
+			dexerror.WithInternalMessage(err.Error()),
+			dexerror.WithInternalData("query_string", queryString),
+		)
+	}
+
+	executeQueryTwiceAndExplain := opts.debug
+	if safeTwice && executeQueryTwiceAndExplain {
+		rows, err := d.db.QueryContext(ctx, "EXPLAIN ANALYZE "+queryString, queryArgs...)
+		if err != nil {
+			return nil, wrapErr(err)
+		}
+		for rows.Next() {
+			var explainLine string
+			if err := rows.Scan(&explainLine); err != nil {
+				return nil, wrapErr(err)
+			}
+			logger.Sugar().Infof("explain analyze: %s", explainLine)
+		}
+
+		rows.Close()
+	}
+
+	t0 := time.Now()
+	rows, err := d.db.QueryContext(ctx, queryString, queryArgs...)
+	duration := time.Since(t0)
+
+	logger.Info(
+		"executed query",
+		zap.String("query_string", queryString),
+		zap.Duration("duration", duration),
+	)
+
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+
+	return rows, nil
+}
+
+func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fieldName string, canonicalizedFieldValue string, options ...RequestOption) (*dexapi.RecordItem, error) {
+	opts := requestOptions{}
+	for _, o := range options {
+		if err := o(&opts); err != nil {
+			return nil, err
+		}
+	}
+
 	nsid, err := d.getNamespaceID(namespaceName)
 	if err != nil {
 		return nil, err
@@ -1703,7 +1745,7 @@ func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fiel
 		return nil, err
 	}
 
-	rows, err := d.db.QueryContext(ctx, queryString, queryArgs...)
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1785,4 +1827,201 @@ func (d *DB) CheckBatches(ctx context.Context, namespaceName string, batchNames 
 	}
 
 	return result, nil
+}
+
+func (d *DB) QueryFieldsList(ctx context.Context, namespace string, q *CompiledQuery, options ...RequestOption) (*dexapi.QueryFieldsResponse, error) {
+	opts := requestOptions{}
+	for _, o := range options {
+		if err := o(&opts); err != nil {
+			return nil, err
+		}
+	}
+
+	nsid, err := d.getNamespaceID(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	qb, err := d.buildQuery(ctx, nsid, q)
+	if err != nil {
+		return nil, err
+	}
+
+	nsArg := qb.addArg(nsid)
+
+	qb.surroundingQueryBefore = fmt.Sprintf(`
+		SELECT k.key_name, COUNT(1)
+		FROM indexing_data AS d
+		INNER JOIN indexing_keys AS k ON (
+				k.namespace_id = %s
+			AND d.key_id = k.key_id
+		)
+		WHERE
+			d.namespace_id = %s
+		AND d.record_id IN (
+	`, nsArg, nsArg)
+
+	qb.surroundingQueryAfter = `
+		)
+		GROUP BY k.key_name
+	`
+
+	qb.selectClause = "records.record_id"
+	qb.orderClause = ""
+
+	queryString, queryArgs, err := qb.buildQuery()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var resp dexapi.QueryFieldsResponse
+
+	for rows.Next() {
+		var fieldName string
+		var count int
+
+		if err := rows.Scan(&fieldName, &count); err != nil {
+			return nil, err
+		}
+
+		fieldName = strings.TrimPrefix(fieldName, ".")
+
+		fieldResp := dexapi.FieldResponse{
+			Field:  fieldName,
+			Count:  &count,
+			Type:   "",
+			Values: nil,
+		}
+
+		resp.Fields = append(resp.Fields, fieldResp)
+	}
+
+	return &resp, nil
+}
+
+func normalizeFieldName(s string) string {
+	if !strings.HasPrefix(s, ".") {
+		return "." + s
+	}
+	return s
+}
+
+func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQuery, fieldNames []string, options ...RequestOption) (*dexapi.QueryFieldsResponse, error) {
+	opts := requestOptions{}
+	for _, o := range options {
+		if err := o(&opts); err != nil {
+			return nil, err
+		}
+	}
+
+	normFieldNames := make([]string, len(fieldNames))
+	for i, fn := range fieldNames {
+		normFieldNames[i] = normalizeFieldName(fn)
+	}
+
+	nsid, err := d.getNamespaceID(namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	qb, err := d.buildQuery(ctx, nsid, q)
+	if err != nil {
+		return nil, err
+	}
+
+	nsArg := qb.addArg(nsid)
+
+	fieldNamesArg := qb.addArg(pq.Array(normFieldNames))
+
+	qb.surroundingQueryBefore = fmt.Sprintf(`
+		SELECT k.key_name, d.value, COUNT(1)
+		FROM indexing_data AS d
+		INNER JOIN indexing_keys AS k ON (
+				k.namespace_id = %s
+			AND d.key_id = k.key_id
+		)
+		WHERE
+			d.namespace_id = %s
+		AND k.key_name = ANY(%s)
+		AND d.record_id IN (
+	`, nsArg, nsArg, fieldNamesArg)
+
+	qb.surroundingQueryAfter = `
+		)
+		GROUP BY k.key_name, d.value
+		ORDER BY k.key_name ASC, d.value ASC, COUNT(1) DESC
+	`
+
+	qb.selectClause = "records.record_id"
+	qb.orderClause = ""
+
+	queryString, queryArgs, err := qb.buildQuery()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var resp dexapi.QueryFieldsResponse
+
+	var currentField *dexapi.FieldResponse
+
+	for rows.Next() {
+		var fieldName string
+		var canonicalizedValue string
+		var count int
+
+		if err := rows.Scan(&fieldName, &canonicalizedValue, &count); err != nil {
+			return nil, err
+		}
+
+		fieldName = strings.TrimPrefix(fieldName, ".")
+
+		if currentField == nil || currentField.Field != fieldName {
+			if currentField != nil {
+				resp.Fields = append(resp.Fields, *currentField)
+			}
+
+			var initialCount int = 0
+
+			currentField = &dexapi.FieldResponse{
+				Field:  fieldName,
+				Type:   "",
+				Count:  &initialCount,
+				Values: nil,
+			}
+		}
+
+		var unmarshalled interface{}
+		if err := json.Unmarshal([]byte(canonicalizedValue), &unmarshalled); err != nil {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("internal_error.unmarshal"),
+				dexerror.WithHTTPCode(500),
+				dexerror.WithInternalMessage("error unmarshalling value from database"),
+			)
+		}
+
+		currentField.Values = append(currentField.Values, dexapi.ValueResponse{
+			Value: unmarshalled,
+			Count: &count,
+		})
+
+		*currentField.Count = *currentField.Count + count
+	}
+
+	if currentField != nil {
+		resp.Fields = append(resp.Fields, *currentField)
+	}
+
+	return &resp, nil
 }

@@ -27,6 +27,9 @@ type queryBuilder struct {
 
 	keyNameToKeyTableAlias  map[string]string
 	keyNameToDataTableAlias map[string]string
+
+	surroundingQueryBefore string
+	surroundingQueryAfter  string
 }
 
 func (qb *queryBuilder) addArg(value interface{}) string {
@@ -236,10 +239,16 @@ func (qb *queryBuilder) buildQuery() (string, []interface{}, error) {
 		query += "\nAND   " + whereClause + " "
 	}
 
-	query += "\n" + `ORDER BY ` + qb.orderClause
+	if qb.orderClause != "" {
+		query += "\n" + `ORDER BY ` + qb.orderClause
+	}
 
 	if qb.limit > 0 {
 		query += "\nLIMIT " + qb.addArg(qb.limit)
+	}
+
+	if qb.surroundingQueryBefore != "" || qb.surroundingQueryAfter != "" {
+		query = qb.surroundingQueryBefore + "\n" + query + "\n" + qb.surroundingQueryAfter
 	}
 
 	return query, qb.args, nil
@@ -346,4 +355,9 @@ func (qb *queryBuilder) setTimestampEndFilterExclusive(t time.Time) error {
 	)
 
 	return nil
+}
+
+func (qb *queryBuilder) addSurroundingQuery(before, after string) {
+	qb.surroundingQueryBefore = before
+	qb.surroundingQueryAfter = after
 }

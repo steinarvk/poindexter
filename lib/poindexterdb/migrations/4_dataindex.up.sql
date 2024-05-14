@@ -1,0 +1,1 @@
+CREATE INDEX idx_indexing_data_record ON indexing_data (namespace_id, record_id);

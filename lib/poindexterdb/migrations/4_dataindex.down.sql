@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_indexing_data_record;

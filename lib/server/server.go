@@ -209,6 +209,8 @@ func (v ingestApiHandler) CheckAndServeHTTP(access config.AccessLevel, namespace
 // middleware enforces basic auth and checks for a custom header, passing the validated username and namespace forward
 func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t0 := time.Now()
+
 		requestLogger := zap.L().With(
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
@@ -218,7 +220,6 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 		var authClient *config.Client
 
-		t0 := time.Now()
 		username, password, ok := r.BasicAuth()
 		if ok {
 			client, ok := s.config.Clients[username]
@@ -271,21 +272,69 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 			s.serveAPIError(w, r, err)
 		} else {
-			requestLogger.Info("request OK")
+			duration := time.Since(t0)
+
+			requestLogger.Info("request OK", zap.Duration("duration", duration))
 		}
 	})
 }
 
 func (s *Server) readQueryFieldsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
-	// Same sort of body as records query, but get all the unique fields and their counts
-	// return QueryFieldsResponse (but with values not set)
-	return s.notImplementedHandler(namespace, w, r)
+	ctx := r.Context()
+
+	var queryReq dexapi.Query
+	if err := s.decodeRequest(r, &queryReq); err != nil {
+		return err
+	}
+	defer r.Body.Close()
+
+	cq, err := s.db.CompileQuery(&queryReq)
+	if err != nil {
+		return fmt.Errorf("query error: %w", err)
+	}
+
+	resp, err := s.db.QueryFieldsList(ctx, namespace, cq)
+	if err != nil {
+		return fmt.Errorf("query error: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) readQueryFieldValuesHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
-	// Same sort of body as records query, though add the presence of the given field to the query.
-	// return QueryFieldsResponse (with only one field set; the chosen one values set)
-	return s.notImplementedHandler(namespace, w, r)
+	ctx := r.Context()
+
+	fieldName := mux.Vars(r)["field"]
+	if fieldName == "" {
+		return dexerror.New(
+			dexerror.WithHTTPCode(400),
+			dexerror.WithErrorID("bad_request.missing_field_name"),
+		)
+	}
+
+	var queryReq dexapi.Query
+	if err := s.decodeRequest(r, &queryReq); err != nil {
+		return err
+	}
+	defer r.Body.Close()
+
+	cq, err := s.db.CompileQuery(&queryReq)
+	if err != nil {
+		return fmt.Errorf("query error: %w", err)
+	}
+
+	fieldNames := []string{
+		fieldName,
+	}
+
+	resp, err := s.db.QueryValuesList(ctx, namespace, cq, fieldNames)
+	if err != nil {
+		return fmt.Errorf("query error: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) readQueryRecordsHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
