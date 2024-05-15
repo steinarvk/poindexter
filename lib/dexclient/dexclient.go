@@ -30,6 +30,8 @@ type Client struct {
 	Password string `yaml:"password"`
 
 	Namespace string `yaml:"namespace"`
+
+	Debug bool `yaml:"debug"`
 }
 
 func DefaultConfigFilename(ctx context.Context) (string, error) {

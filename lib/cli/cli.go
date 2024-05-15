@@ -64,6 +64,9 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 		Short: "Client commands",
 	}
 
+	var flagDebug bool
+	clientCmds.PersistentFlags().BoolVar(&flagDebug, "debug", false, "enable debug flag for requests")
+
 	var syncCmd = &cobra.Command{
 		Use:   "sync",
 		Short: "Sync a directory",
@@ -125,7 +128,13 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 			return nil, err
 		}
 
-		return dexclient.New(ctx, cfg, sel)
+		client, err := dexclient.New(ctx, cfg, sel)
+		if err != nil {
+			return nil, err
+		}
+		client.Debug = flagDebug
+
+		return client, nil
 	}
 
 	getCmd := &cobra.Command{

@@ -235,8 +235,11 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 			return
 		}
 
+		debugHeader := r.Header.Get("X-Debug") == "true"
+
 		requestLogger = requestLogger.With(zap.String("namespace", namespace))
-		r = r.WithContext(logging.NewContextWithLogger(r.Context(), requestLogger))
+
+		r = r.WithContext(logging.NewContextWithLogger(r.Context(), requestLogger, debugHeader))
 
 		serveUnauthorized := func() {
 			zap.L().Sugar().Infof("rejecting access to user %q to namespace %q", username, namespace)

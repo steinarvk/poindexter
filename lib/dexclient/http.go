@@ -43,6 +43,10 @@ func (c *Client) NewRequest(ctx context.Context, method string, path string) (*R
 
 	req.SetBasicAuth(c.User, c.Password)
 
+	if c.Debug {
+		req.Header.Set("X-Debug", "true")
+	}
+
 	return &Request{
 		Method:  method,
 		Path:    path,

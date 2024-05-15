@@ -12,14 +12,29 @@ const (
 	contextKeyLogger contextKey = "logger"
 )
 
-func NewContextWithLogger(ctx context.Context, logger *zap.Logger) context.Context {
-	return context.WithValue(ctx, contextKeyLogger, logger)
+type ContextData struct {
+	Logger *zap.Logger
+	Debug  bool
+}
+
+func NewContextWithLogger(ctx context.Context, logger *zap.Logger, debug bool) context.Context {
+	return context.WithValue(ctx, contextKeyLogger, ContextData{Logger: logger, Debug: debug})
 }
 
 func FromContext(ctx context.Context) *zap.Logger {
-	logger, ok := ctx.Value(contextKeyLogger).(*zap.Logger)
+	cdata, ok := ctx.Value(contextKeyLogger).(ContextData)
 	if !ok {
 		return zap.L()
 	}
-	return logger
+	return cdata.Logger
+}
+
+func DataFromContext(ctx context.Context) ContextData {
+	cdata, ok := ctx.Value(contextKeyLogger).(ContextData)
+	if !ok {
+		return ContextData{
+			Logger: zap.L(),
+		}
+	}
+	return cdata
 }

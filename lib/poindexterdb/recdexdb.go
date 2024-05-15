@@ -1512,7 +1512,7 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		return err
 	}
 
-	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true)
 	if err != nil {
 		return err
 	}
@@ -1659,8 +1659,9 @@ func (d *DB) CheckBatch(ctx context.Context, namespaceName string, batchName str
 	return true, nil
 }
 
-func (d *DB) executeQueryRows(ctx context.Context, queryString string, queryArgs []interface{}, safeTwice bool, opts requestOptions) (*sql.Rows, error) {
-	logger := logging.FromContext(ctx)
+func (d *DB) executeQueryRows(ctx context.Context, queryString string, queryArgs []interface{}, safeTwice bool) (*sql.Rows, error) {
+	contextdata := logging.DataFromContext(ctx)
+	logger := contextdata.Logger
 
 	wrapErr := func(err error) error {
 		return dexerror.New(
@@ -1671,8 +1672,10 @@ func (d *DB) executeQueryRows(ctx context.Context, queryString string, queryArgs
 		)
 	}
 
-	executeQueryTwiceAndExplain := opts.debug
-	if safeTwice && executeQueryTwiceAndExplain {
+	debugFlag := contextdata.Debug
+	executeQueryTwiceAndExplain := safeTwice && debugFlag
+
+	if executeQueryTwiceAndExplain {
 		rows, err := d.db.QueryContext(ctx, "EXPLAIN ANALYZE "+queryString, queryArgs...)
 		if err != nil {
 			return nil, wrapErr(err)
@@ -1745,7 +1748,7 @@ func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fiel
 		return nil, err
 	}
 
-	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1874,7 +1877,7 @@ func (d *DB) QueryFieldsList(ctx context.Context, namespace string, q *CompiledQ
 		return nil, err
 	}
 
-	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1966,7 +1969,7 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 		return nil, err
 	}
 
-	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true, opts)
+	rows, err := d.executeQueryRows(ctx, queryString, queryArgs, true)
 	if err != nil {
 		return nil, err
 	}
