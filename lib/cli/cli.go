@@ -821,9 +821,9 @@ func mkServerCommandGroup(ctx context.Context) *cobra.Command {
 			fmt.Println("NumRecords:", stats.NumRecords)
 			fmt.Println("NumIndexingKeys:", stats.NumIndexingKeys)
 			fmt.Println("NumIndexingRows:", stats.NumIndexingRows)
-			fmt.Println("TotalStorageBytes:", stats.TotalSizeAllRelations)
-			fmt.Println("TotalIndexBytes:", stats.TotalSizeAllIndexes)
-			fmt.Println("TotalRecordBytes:", stats.TotalLengthAllRecords)
+			fmt.Println("TotalStorageBytes:", humanizeBytes(stats.TotalSizeAllRelations))
+			fmt.Println("TotalIndexBytes:", humanizeBytes(stats.TotalSizeAllIndexes))
+			fmt.Println("TotalRecordBytes:", humanizeBytes(stats.TotalLengthAllRecords))
 			fmt.Println("MaxRecordLength:", stats.MaxRecordLength)
 			fmt.Println()
 			fmt.Println("Average record length:", float64(stats.TotalLengthAllRecords)/float64(stats.NumRecords))
@@ -834,9 +834,9 @@ func mkServerCommandGroup(ctx context.Context) *cobra.Command {
 
 			for tableName, tableStats := range stats.TableStats {
 				fmt.Println("Table:", tableName)
-				fmt.Println("  pg_relation_size (bytes):", tableStats.PgRelationSize)
-				fmt.Println("  pg_indexes_size (bytes):", tableStats.PgIndexesSize)
-				fmt.Println("  pg_total_relation_size (bytes):", tableStats.PgTotalRelationSize)
+				fmt.Println("  pg_relation_size (bytes):", humanizeBytes(tableStats.PgRelationSize))
+				fmt.Println("  pg_indexes_size (bytes):", humanizeBytes(tableStats.PgIndexesSize))
+				fmt.Println("  pg_total_relation_size (bytes):", humanizeBytes(tableStats.PgTotalRelationSize))
 				fmt.Println("  n_live_tup (approximate rows):", tableStats.NLiveTuples)
 				fmt.Println("  n_dead_tup (approximate rows):", tableStats.NDeadTuples)
 			}

@@ -10,12 +10,17 @@ import (
 	"go.uber.org/zap"
 )
 
+type TableAlias string
+type ArgumentName string
+type QueryChunk string
+
 type queryBuilder struct {
 	namespaceId Namespace
 
-	selectClause string
-	orderClause  string
-	limit        int
+	selectClause  string
+	orderClause   string
+	groupByClause string
+	limit         int
 
 	joinClauses []string
 
@@ -23,20 +28,20 @@ type queryBuilder struct {
 
 	args []interface{}
 
-	namespaceArgName string
+	namespaceArgName ArgumentName
 
-	keyNameToKeyTableAlias  map[string]string
-	keyNameToDataTableAlias map[string]string
+	keyNameToKeyTableAlias  map[string]TableAlias
+	keyNameToDataTableAlias map[string]TableAlias
 
 	surroundingQueryBefore string
 	surroundingQueryAfter  string
 }
 
-func (qb *queryBuilder) addArg(value interface{}) string {
+func (qb *queryBuilder) addArg(value interface{}) ArgumentName {
 	n := len(qb.args)
 	name := fmt.Sprintf("$%d", (n + 1))
 	qb.args = append(qb.args, value)
-	return name
+	return ArgumentName(name)
 }
 
 func newQueryBuilder(nsid Namespace) *queryBuilder {
@@ -45,8 +50,8 @@ func newQueryBuilder(nsid Namespace) *queryBuilder {
 		selectClause:            `DISTINCT records.record_id, records.record_timestamp, record_data`,
 		orderClause:             `records.record_timestamp ASC`,
 		limit:                   1000,
-		keyNameToKeyTableAlias:  make(map[string]string),
-		keyNameToDataTableAlias: make(map[string]string),
+		keyNameToKeyTableAlias:  make(map[string]TableAlias),
+		keyNameToDataTableAlias: make(map[string]TableAlias),
 	}
 	qb.namespaceArgName = qb.addArg(qb.namespaceId)
 	return qb
@@ -82,14 +87,14 @@ func (qb *queryBuilder) addTimestampFilter(t0, t1 *time.Time) {
 	}
 }
 
-func (qb *queryBuilder) addInnerJoinForKeyName(keyName string) (string, error) {
+func (qb *queryBuilder) addInnerJoinForKeyName(keyName string) (TableAlias, error) {
 	alias, ok := qb.keyNameToKeyTableAlias[keyName]
 	if ok {
 		return alias, nil
 	}
 
 	n := len(qb.keyNameToKeyTableAlias) + 1
-	alias = fmt.Sprintf("k%d", n)
+	alias = TableAlias(fmt.Sprintf("k%d", n))
 	qb.keyNameToKeyTableAlias[keyName] = alias
 
 	argName := qb.addArg(keyName)
@@ -105,7 +110,7 @@ func (qb *queryBuilder) addInnerJoinForKeyName(keyName string) (string, error) {
 	return alias, nil
 }
 
-func (qb *queryBuilder) addInnerJoinForKeyValue(keyName string) (string, error) {
+func (qb *queryBuilder) addInnerJoinForKeyValue(keyName string) (TableAlias, error) {
 	keyNameAlias, err := qb.addInnerJoinForKeyName(keyName)
 	if err != nil {
 		return "", err
@@ -117,7 +122,7 @@ func (qb *queryBuilder) addInnerJoinForKeyValue(keyName string) (string, error) 
 	}
 
 	n := len(qb.keyNameToDataTableAlias) + 1
-	alias = fmt.Sprintf("d%d", n)
+	alias = TableAlias(fmt.Sprintf("d%d", n))
 	qb.keyNameToDataTableAlias[keyName] = alias
 
 	// INNER JOIN indexing_data AS t2 ON (namespace.namespace_id = ? AND t1.key_id = t2.key_id)
@@ -135,14 +140,14 @@ func (qb *queryBuilder) addInnerJoinForKeyValue(keyName string) (string, error) 
 	return alias, nil
 }
 
-func (qb *queryBuilder) addOuterJoinForKeyName(keyName string) (string, error) {
+func (qb *queryBuilder) addOuterJoinForKeyName(keyName string) (TableAlias, error) {
 	alias, ok := qb.keyNameToKeyTableAlias[keyName]
 	if ok {
 		return alias, nil
 	}
 
 	n := len(qb.keyNameToKeyTableAlias) + 1
-	alias = fmt.Sprintf("k%d", n)
+	alias = TableAlias(fmt.Sprintf("k%d", n))
 	qb.keyNameToKeyTableAlias[keyName] = alias
 
 	argName := qb.addArg(keyName)
@@ -158,7 +163,7 @@ func (qb *queryBuilder) addOuterJoinForKeyName(keyName string) (string, error) {
 	return alias, nil
 }
 
-func (qb *queryBuilder) addOuterJoinForKeyValue(keyName string) (string, error) {
+func (qb *queryBuilder) addOuterJoinForKeyValue(keyName string) (TableAlias, error) {
 	keyNameAlias, err := qb.addOuterJoinForKeyName(keyName)
 	if err != nil {
 		return "", err
@@ -170,7 +175,7 @@ func (qb *queryBuilder) addOuterJoinForKeyValue(keyName string) (string, error) 
 	}
 
 	n := len(qb.keyNameToDataTableAlias) + 1
-	alias = fmt.Sprintf("d%d", n)
+	alias = TableAlias(fmt.Sprintf("d%d", n))
 	qb.keyNameToDataTableAlias[keyName] = alias
 
 	qb.joinClauses = append(qb.joinClauses, fmt.Sprintf(
@@ -233,10 +238,14 @@ func (qb *queryBuilder) buildQuery() (string, []interface{}, error) {
 		query += "\n" + joinClause
 	}
 
-	query += "\nWHERE records.namespace_id = " + qb.namespaceArgName
+	query += "\nWHERE records.namespace_id = " + string(qb.namespaceArgName)
 
 	for _, whereClause := range qb.whereClauses {
 		query += "\nAND   " + whereClause + " "
+	}
+
+	if qb.groupByClause != "" {
+		query += "\n" + `GROUP BY ` + qb.groupByClause
 	}
 
 	if qb.orderClause != "" {
@@ -244,7 +253,7 @@ func (qb *queryBuilder) buildQuery() (string, []interface{}, error) {
 	}
 
 	if qb.limit > 0 {
-		query += "\nLIMIT " + qb.addArg(qb.limit)
+		query += "\nLIMIT " + string(qb.addArg(qb.limit))
 	}
 
 	if qb.surroundingQueryBefore != "" || qb.surroundingQueryAfter != "" {
@@ -317,22 +326,12 @@ func (qb *queryBuilder) setOrderBy(orderBy dexapi.OrderBy) error {
 }
 
 func (qb *queryBuilder) setOmitHidden() error {
-	return qb.addNegatedFieldHasValue("._deletion_marker", "true")
+	qb.whereClauses = append(qb.whereClauses, "NOT records.record_is_deletion_marker")
+	return nil
 }
 
 func (qb *queryBuilder) setOmitSuperseded() error {
-	qb.joinClauses = append(qb.joinClauses,
-		"LEFT OUTER JOIN records AS sup_records "+
-			"ON ( "+
-			"(records.namespace_id = sup_records.namespace_id) "+
-			"AND "+
-			"(records.record_id = sup_records.record_supersedes_id) "+
-			")",
-	)
-
-	qb.whereClauses = append(qb.whereClauses,
-		"sup_records.record_id IS NULL",
-	)
+	qb.whereClauses = append(qb.whereClauses, "NOT records.record_is_superseded")
 
 	return nil
 }
@@ -341,7 +340,7 @@ func (qb *queryBuilder) setTimestampStartFilterInclusive(t time.Time) error {
 	arg := qb.addArg(t)
 
 	qb.whereClauses = append(qb.whereClauses,
-		"records.record_timestamp >= "+arg,
+		"records.record_timestamp >= "+string(arg),
 	)
 
 	return nil
@@ -351,13 +350,28 @@ func (qb *queryBuilder) setTimestampEndFilterExclusive(t time.Time) error {
 	arg := qb.addArg(t)
 
 	qb.whereClauses = append(qb.whereClauses,
-		"records.record_timestamp < "+arg,
+		"records.record_timestamp < "+string(arg),
 	)
 
 	return nil
 }
 
-func (qb *queryBuilder) addSurroundingQuery(before, after string) {
-	qb.surroundingQueryBefore = before
-	qb.surroundingQueryAfter = after
+func (qb *queryBuilder) getNamespaceArgName() ArgumentName {
+	return qb.namespaceArgName
+}
+
+func (qb *queryBuilder) queryf(format string, args ...interface{}) QueryChunk {
+	for _, arg := range args {
+		_, isArgName := arg.(ArgumentName)
+		_, isSafeQuery := arg.(QueryChunk)
+		_, isTableAlias := arg.(TableAlias)
+		if !isArgName && !isSafeQuery && !isTableAlias {
+			panic(fmt.Errorf("queryf: unexpected argument type: %T", arg))
+		}
+	}
+	return QueryChunk(fmt.Sprintf(format, args...))
+}
+
+func (qb *queryBuilder) addCustomJoin(joinClause QueryChunk) {
+	qb.joinClauses = append(qb.joinClauses, string(joinClause))
 }

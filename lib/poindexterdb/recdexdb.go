@@ -670,7 +670,19 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 	var numInsertedRecords, numIndexEntriesInserted int
 
 	if len(toInsertRecordIDs) > 0 {
-		copyRecordsStmt, err := tx.PrepareContext(ctx, pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id"))
+		newlySupersededRecords := map[uuid.UUID]uuid.UUID{}
+
+		for _, entry := range recordEntries {
+			record := entry.record
+			if _, present := toInsertRecordIDs[record.RecordUUID]; !present {
+				continue
+			}
+			if record.SupersedesUUID != nil {
+				newlySupersededRecords[*record.SupersedesUUID] = record.RecordUUID
+			}
+		}
+
+		copyRecordsStmt, err := tx.PrepareContext(ctx, pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id", "record_is_deletion_marker", "record_is_superseded_by_id"))
 		if err != nil {
 			return nil, fmt.Errorf("error preparing copy records: %w", err)
 		}
@@ -694,6 +706,13 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 				Inserted:   true,
 			})
 
+			var isSupersededBy *uuid.UUID
+
+			if newID, present := newlySupersededRecords[record.RecordUUID]; present {
+				isSupersededBy = &newID
+				delete(newlySupersededRecords, record.RecordUUID)
+			}
+
 			_, err := copyRecordsStmt.ExecContext(
 				ctx,
 				nsid,
@@ -704,6 +723,8 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 				record.ShapeHash,
 				record.LockedUntil,
 				record.SupersedesUUID,
+				record.IsDeletionMarker,
+				isSupersededBy,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("error copying record: %w", err)
@@ -714,6 +735,27 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 
 		if _, err := copyRecordsStmt.ExecContext(ctx); err != nil {
 			return nil, fmt.Errorf("error copying record (flush): %w", err)
+		}
+
+		if len(newlySupersededRecords) > 0 {
+			// Update the superseded records to point to their new superseding records.
+			// TODO do this in bulk?
+			// But usually superseding records will be for single-insert usecases, so not too terrible.
+			for oldID, newID := range newlySupersededRecords {
+				if _, err := tx.ExecContext(
+					ctx,
+					`
+					UPDATE records
+					SET record_is_superseded_by_id = $1
+					WHERE namespace_id = $2 AND record_id = $3
+					`,
+					newID,
+					nsid,
+					oldID,
+				); err != nil {
+					return nil, fmt.Errorf("error updating superseded record: %w", err)
+				}
+			}
 		}
 
 		copyIndexStmt, err := tx.PrepareContext(ctx, pq.CopyIn("indexing_data", "namespace_id", "key_id", "record_id", "value"))
@@ -1675,6 +1717,10 @@ func (d *DB) executeQueryRows(ctx context.Context, queryString string, queryArgs
 	debugFlag := contextdata.Debug
 	executeQueryTwiceAndExplain := safeTwice && debugFlag
 
+	if debugFlag {
+		fmt.Println("executing query: ", queryString, queryArgs)
+	}
+
 	if executeQueryTwiceAndExplain {
 		rows, err := d.db.QueryContext(ctx, "EXPLAIN ANALYZE "+queryString, queryArgs...)
 		if err != nil {
@@ -1850,27 +1896,14 @@ func (d *DB) QueryFieldsList(ctx context.Context, namespace string, q *CompiledQ
 		return nil, err
 	}
 
-	nsArg := qb.addArg(nsid)
+	qb.addCustomJoin(qb.queryf(`
+		INNER JOIN indexing_data AS d ON (d.namespace_id = %s AND d.record_id = records.record_id)
+		INNER JOIN indexing_keys AS k ON (k.namespace_id = %s AND k.key_id = d.key_id)
+	`, qb.getNamespaceArgName(), qb.getNamespaceArgName()))
 
-	qb.surroundingQueryBefore = fmt.Sprintf(`
-		SELECT k.key_name, COUNT(1)
-		FROM indexing_data AS d
-		INNER JOIN indexing_keys AS k ON (
-				k.namespace_id = %s
-			AND d.key_id = k.key_id
-		)
-		WHERE
-			d.namespace_id = %s
-		AND d.record_id IN (
-	`, nsArg, nsArg)
-
-	qb.surroundingQueryAfter = `
-		)
-		GROUP BY k.key_name
-	`
-
-	qb.selectClause = "records.record_id"
-	qb.orderClause = ""
+	qb.selectClause = "k.key_name, COUNT(1)"
+	qb.groupByClause = "k.key_name"
+	qb.orderClause = "COUNT(1) DESC, k.key_name ASC"
 
 	queryString, queryArgs, err := qb.buildQuery()
 	if err != nil {

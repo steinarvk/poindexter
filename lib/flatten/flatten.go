@@ -118,6 +118,10 @@ var validTimestampFieldNames = []string{
 	"time",
 }
 
+var deletionMarkerFieldNames = []string{
+	"_deletion_marker",
+}
+
 func ValidIDFieldNames() []string {
 	return validIDFieldNames
 }
@@ -165,13 +169,14 @@ func DefaultFlattener() *Flattener {
 }
 
 type Record struct {
-	RecordUUID    uuid.UUID
-	Timestamp     time.Time
-	Hash          string
-	FieldValues   map[string][][]byte
-	Fields        []string
-	CanonicalJSON string
-	ShapeHash     string
+	RecordUUID       uuid.UUID
+	Timestamp        time.Time
+	Hash             string
+	FieldValues      map[string][][]byte
+	Fields           []string
+	CanonicalJSON    string
+	ShapeHash        string
+	IsDeletionMarker bool
 
 	SupersedesUUID *uuid.UUID
 	LockedUntil    *time.Time
@@ -576,6 +581,14 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 		recordTimestamp = time.Now()
 	}
 
+	var isDeletionMarker bool
+	for _, deletionMarkerFieldName := range deletionMarkerFieldNames {
+		if _, ok := unmarshalledObj[deletionMarkerFieldName]; ok {
+			isDeletionMarker = true
+			break
+		}
+	}
+
 	var supersedesUUID *uuid.UUID
 
 	if supersedesIDString, ok := unmarshalledObj[supersedesFieldName].(string); ok {
@@ -617,14 +630,15 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 	recordShape := hashSortedFieldNames(fieldNames)
 
 	return &Record{
-		RecordUUID:     recordUUID,
-		Timestamp:      recordTimestamp,
-		Hash:           hexlify(recordHash),
-		FieldValues:    fieldValues,
-		Fields:         fieldNames,
-		CanonicalJSON:  string(canonicalForm),
-		SupersedesUUID: supersedesUUID,
-		LockedUntil:    lockedUntil,
-		ShapeHash:      recordShape,
+		RecordUUID:       recordUUID,
+		Timestamp:        recordTimestamp,
+		Hash:             hexlify(recordHash),
+		FieldValues:      fieldValues,
+		Fields:           fieldNames,
+		CanonicalJSON:    string(canonicalForm),
+		SupersedesUUID:   supersedesUUID,
+		LockedUntil:      lockedUntil,
+		ShapeHash:        recordShape,
+		IsDeletionMarker: isDeletionMarker,
 	}, nil
 }
