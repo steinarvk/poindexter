@@ -152,6 +152,7 @@ func (s *Server) Run() error {
 	addHandler("POST", "/query/{ns}/values/{field}/", queryApiHandler{s.readQueryFieldValuesHandler})
 	addHandler("GET", "/query/{ns}/records/by/{field}/{value}/", queryApiHandler{s.lookupRecordByField})
 	addHandler("GET", "/query/{ns}/records/{id}/", queryApiHandler{s.lookupRecordByID})
+	addHandler("GET", "/query/{ns}/entities/{id}/", queryApiHandler{s.lookupEntityByID})
 
 	addHandler("POST", "/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
 	addHandler("POST", "/ingest/{ns}/jsonl/", ingestApiHandler{s.ingestJSONLHandler})
@@ -594,7 +595,33 @@ func (s *Server) lookupRecordByID(namespace string, w http.ResponseWriter, r *ht
 		)
 	}
 
-	recorditem, err := s.db.LookupObjectByID(ctx, namespace, recordID)
+	recorditem, err := s.db.LookupObjectByRecordID(ctx, namespace, recordID)
+	if err != nil {
+		return err
+	}
+
+	response := dexapi.LookupRecordResponse{
+		RecordItem: *recorditem,
+	}
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) lookupEntityByID(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	entityID, err := uuid.Parse(mux.Vars(r)["id"])
+	if err != nil {
+		return dexerror.New(
+			dexerror.WithHTTPCode(400),
+			dexerror.WithErrorID("bad_request.bad_entity_id"),
+			dexerror.WithPublicMessage("Bad entity ID"),
+			dexerror.WithPublicData("entity_id", mux.Vars(r)["id"]),
+			dexerror.WithPublicData("error", err.Error()),
+		)
+	}
+
+	recorditem, err := s.db.LookupObjectByEntityID(ctx, namespace, entityID)
 	if err != nil {
 		return err
 	}

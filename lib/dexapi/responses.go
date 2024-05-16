@@ -3,6 +3,7 @@ package dexapi
 type RecordMetadata struct {
 	Namespace         string `json:"namespace"`
 	RecordID          string `json:"record_id"`
+	EntityID          string `json:"entity_id"`
 	Timestamp         string `json:"timestamp"`
 	TimestampUnixNano string `json:"timestamp_unix_nano"`
 }

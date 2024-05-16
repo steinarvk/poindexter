@@ -118,6 +118,11 @@ var validTimestampFieldNames = []string{
 	"time",
 }
 
+var validEntityIDFieldNames = []string{
+	"entity_id",
+	"entity_uuid",
+}
+
 var deletionMarkerFieldNames = []string{
 	"_deletion_marker",
 }
@@ -178,6 +183,7 @@ type Record struct {
 	ShapeHash        string
 	IsDeletionMarker bool
 
+	EntityUUID     *uuid.UUID
 	SupersedesUUID *uuid.UUID
 	LockedUntil    *time.Time
 }
@@ -508,55 +514,75 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 
 	recordHash := hashData(canonicalForm)
 
-	var recordID string
-	var chosenIDFieldName string
-	for _, idFieldName := range validIDFieldNames {
-		value, ok := unmarshalledObj[idFieldName]
-		if ok {
+	maybeSelectStringField := func(fieldNames []string, code string) (string, string, error) {
+		for _, fieldName := range fieldNames {
+			value, ok := unmarshalledObj[fieldName]
+			if !ok {
+				continue
+			}
 			valueString, ok := value.(string)
 			if !ok {
-				return nil, dexerror.New(
-					dexerror.WithErrorID("bad_record.invalid_id"),
+				return "", "", dexerror.New(
+					dexerror.WithErrorID(fmt.Sprintf("bad_record.%s.invalid.not_a_string", code)),
 					dexerror.WithHTTPCode(400),
-					dexerror.WithPublicMessage("invalid ID field: not a string"),
-					dexerror.WithPublicData("field", idFieldName),
+					dexerror.WithPublicMessage(fmt.Sprintf("invalid %s field: not a string", code)),
+					dexerror.WithPublicData("field", fieldName),
 					dexerror.WithPublicData("value", value),
 				)
 			}
-			if ok {
-				chosenIDFieldName = idFieldName
-				recordID = valueString
-				break
-			}
+			return fieldName, valueString, nil
 		}
+		return "", "", nil
 	}
-	var recordUUID uuid.UUID
-	if recordID != "" {
-		parsed, err := uuid.Parse(recordID)
+
+	maybeSelectUUIDField := func(fieldNames []string, code string) (string, *uuid.UUID, error) {
+		fieldName, valueString, err := maybeSelectStringField(fieldNames, code)
 		if err != nil {
-			return nil, dexerror.New(
-				dexerror.WithErrorID("bad_record.invalid_id"),
+			return "", nil, err
+		}
+		if fieldName == "" {
+			return "", nil, nil
+		}
+		parsed, err := uuid.Parse(valueString)
+		if err != nil {
+			return "", nil, dexerror.New(
+				dexerror.WithErrorID(fmt.Sprintf("bad_record.%s.invalid.bad_uuid", code)),
 				dexerror.WithHTTPCode(400),
-				dexerror.WithPublicMessage("invalid ID field: not a valid UUID"),
-				dexerror.WithPublicData("field", chosenIDFieldName),
-				dexerror.WithPublicData("value", recordID),
+				dexerror.WithPublicMessage(fmt.Sprintf("invalid %s field: not a valid UUID", code)),
+				dexerror.WithPublicData("field", fieldName),
+				dexerror.WithPublicData("value", valueString),
 			)
 		}
 		if parsed.String() == "00000000-0000-0000-0000-000000000000" {
-			return nil, dexerror.New(
-				dexerror.WithErrorID("bad_record.invalid_id"),
+			return "", nil, dexerror.New(
+				dexerror.WithErrorID(fmt.Sprintf("bad_record.%s.zero_uuid", code)),
 				dexerror.WithHTTPCode(400),
-				dexerror.WithPublicMessage("invalid ID field: zero UUID"),
-				dexerror.WithPublicData("field", chosenIDFieldName),
-				dexerror.WithPublicData("value", recordID),
+				dexerror.WithPublicMessage(fmt.Sprintf("invalid %s field: zero UUID", code)),
+				dexerror.WithPublicData("field", fieldName),
+				dexerror.WithPublicData("value", valueString),
 			)
 		}
-		recordUUID = parsed
+		return fieldName, &parsed, nil
+	}
+
+	_, recordUUIDPtr, err := maybeSelectUUIDField(validIDFieldNames, "record_id")
+	if err != nil {
+		return nil, err
+	}
+
+	var recordUUID uuid.UUID
+	if recordUUIDPtr != nil {
+		recordUUID = *recordUUIDPtr
 	} else {
 		if !f.AcceptMissingID {
 			return nil, ErrRecordHasNoID
 		}
 		recordUUID = uuid.New()
+	}
+
+	_, entityUUID, err := maybeSelectUUIDField(validEntityIDFieldNames, "entity_id")
+	if err != nil {
+		return nil, err
 	}
 
 	var timestampValue interface{}
@@ -637,6 +663,7 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 		Fields:           fieldNames,
 		CanonicalJSON:    string(canonicalForm),
 		SupersedesUUID:   supersedesUUID,
+		EntityUUID:       entityUUID,
 		LockedUntil:      lockedUntil,
 		ShapeHash:        recordShape,
 		IsDeletionMarker: isDeletionMarker,

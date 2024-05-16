@@ -536,6 +536,8 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 	supersededUUIDs := map[uuid.UUID]struct{}{}
 	toInsertHashes := map[uuid.UUID]string{}
 	toInsertHashesByIndex := map[int]string{}
+	explicitEntityIDsByRecordID := map[uuid.UUID]uuid.UUID{}
+	recordIDBySupersededID := map[uuid.UUID]uuid.UUID{}
 	var allRecordIDs []uuid.UUID
 	var allRecordHashes []string
 	for _, recordEntry := range recordEntries {
@@ -545,6 +547,9 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		toInsertHashes[record.RecordUUID] = record.Hash
 		toInsertHashesByIndex[int(recordEntry.index)] = record.Hash
 		toInsertRecordIDs[record.RecordUUID] = struct{}{}
+		if record.EntityUUID != nil {
+			explicitEntityIDsByRecordID[record.RecordUUID] = *record.EntityUUID
+		}
 		for _, k := range record.Fields {
 			keysRequiredMap[k] = struct{}{}
 		}
@@ -555,6 +560,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 				return nil, fmt.Errorf("duplicate superseded UUID (within batch): %v", k)
 			}
 			supersededUUIDs[k] = struct{}{}
+			recordIDBySupersededID[k] = record.RecordUUID
 		}
 	}
 
@@ -597,6 +603,59 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 			}
 
 			return nil, fmt.Errorf("duplicate superseded UUID (vs. database): %v", recordID)
+		}
+	}
+
+	entityIDsByRecordID := explicitEntityIDsByRecordID
+
+	if len(supersededUUIDs) > 0 {
+		// Records that supersede other records take on the entity ID of the superseded record.
+		var supersededList []uuid.UUID
+		for k, _ := range recordIDBySupersededID {
+			supersededList = append(supersededList, k)
+		}
+
+		rows, err := tx.QueryContext(ctx, "SELECT record_id, entity_id FROM records WHERE namespace_id = $1 AND record_id = ANY($2)", nsid, pq.Array(supersededList))
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var supersededRecordID uuid.UUID
+			var entityID uuid.UUID
+			if err := rows.Scan(&supersededRecordID, &entityID); err != nil {
+				return nil, err
+			}
+
+			supersedingRecordID := recordIDBySupersededID[supersededRecordID]
+
+			previous, present := entityIDsByRecordID[supersedingRecordID]
+			if present && previous != entityID {
+				return nil, dexerror.New(
+					dexerror.WithErrorID("bad_record.superseded_entity_id_mismatch"),
+					dexerror.WithHTTPCode(http.StatusConflict),
+					dexerror.WithPublicMessage("superseded record has different entity ID"),
+					dexerror.WithInternalData("superseded_record_id", supersededRecordID.String()),
+					dexerror.WithInternalData("superseding_record_id", supersedingRecordID.String()),
+					dexerror.WithInternalData("superseded_entity_id", previous.String()),
+					dexerror.WithInternalData("superseding_entity_id", entityID.String()),
+				)
+			}
+
+			entityIDsByRecordID[supersedingRecordID] = entityID
+		}
+
+		// TODO this can probably happen and not be an error if the superseded record is within the same batch
+		for _, v := range recordIDBySupersededID {
+			if _, present := entityIDsByRecordID[v]; !present {
+				return nil, dexerror.New(
+					dexerror.WithErrorID("internal_error.superseded_record_not_found"),
+					dexerror.WithHTTPCode(http.StatusInternalServerError),
+					dexerror.WithPublicMessage("superseded record not found"),
+					dexerror.WithInternalData("superseded_record_id", v.String()),
+				)
+			}
 		}
 	}
 
@@ -682,7 +741,20 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 			}
 		}
 
-		copyRecordsStmt, err := tx.PrepareContext(ctx, pq.CopyIn("records", "namespace_id", "record_id", "record_timestamp", "record_hash", "record_data", "record_shape_hash", "record_locked_until", "record_supersedes_id", "record_is_deletion_marker", "record_is_superseded_by_id"))
+		copyRecordsStmt, err := tx.PrepareContext(ctx, pq.CopyIn(
+			"records",
+			"namespace_id",
+			"record_id",
+			"record_timestamp",
+			"record_hash",
+			"record_data",
+			"record_shape_hash",
+			"record_locked_until",
+			"record_supersedes_id",
+			"record_is_deletion_marker",
+			"record_is_superseded_by_id",
+			"entity_id",
+		))
 		if err != nil {
 			return nil, fmt.Errorf("error preparing copy records: %w", err)
 		}
@@ -708,6 +780,19 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 
 			var isSupersededBy *uuid.UUID
 
+			entityID, entityIDPresent := entityIDsByRecordID[record.RecordUUID]
+			if !entityIDPresent {
+				if record.SupersedesUUID != nil {
+					return nil, dexerror.New(
+						dexerror.WithErrorID("internal_error.bad_superseding_record"),
+						dexerror.WithHTTPCode(http.StatusInternalServerError),
+						dexerror.WithInternalMessage("superseding record still has no known entity ID"),
+						dexerror.WithInternalData("record_id", record.RecordUUID.String()),
+					)
+				}
+				entityID = record.RecordUUID
+			}
+
 			if newID, present := newlySupersededRecords[record.RecordUUID]; present {
 				isSupersededBy = &newID
 				delete(newlySupersededRecords, record.RecordUUID)
@@ -725,6 +810,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 				record.SupersedesUUID,
 				record.IsDeletionMarker,
 				isSupersededBy,
+				entityID,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("error copying record: %w", err)
@@ -1546,7 +1632,7 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 		return err
 	}
 
-	qb.selectClause = "records.record_id, records.record_timestamp, records.record_data"
+	qb.selectClause = "records.record_id, records.entity_id, records.record_timestamp, records.record_data"
 	qb.limit = q.Limit
 
 	queryString, queryArgs, err := qb.buildQuery()
@@ -1562,10 +1648,11 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 
 	for rows.Next() {
 		var recordID uuid.UUID
+		var entityID uuid.UUID
 		var recordTimestamp time.Time
 		var recordData []byte
 
-		if err := rows.Scan(&recordID, &recordTimestamp, &recordData); err != nil {
+		if err := rows.Scan(&recordID, &entityID, &recordTimestamp, &recordData); err != nil {
 			return err
 		}
 
@@ -1573,6 +1660,7 @@ func (d *DB) queryRecords(ctx context.Context, namespace string, q *CompiledQuer
 			RecordMetadata: dexapi.RecordMetadata{
 				Namespace:         namespace,
 				RecordID:          recordID.String(),
+				EntityID:          entityID.String(),
 				Timestamp:         recordTimestamp.Format(time.RFC3339Nano),
 				TimestampUnixNano: fmt.Sprintf("%d", recordTimestamp.UnixNano()),
 			},
@@ -1632,10 +1720,11 @@ func (d *DB) QueryRecordsList(ctx context.Context, namespace string, q *Compiled
 	return items, nil
 }
 
-func makeRecordItem(namespace string, recordID uuid.UUID, recordTimestamp time.Time, recordData []byte) (dexapi.RecordItem, error) {
+func makeRecordItem(namespace string, recordID uuid.UUID, entityID uuid.UUID, recordTimestamp time.Time, recordData []byte) (dexapi.RecordItem, error) {
 	var record dexapi.RecordItem
 	record.RecordMetadata.Namespace = namespace
 	record.RecordMetadata.RecordID = recordID.String()
+	record.RecordMetadata.EntityID = entityID.String()
 	record.RecordMetadata.Timestamp = recordTimestamp.Format(time.RFC3339Nano)
 	record.RecordMetadata.TimestampUnixNano = fmt.Sprintf("%d", recordTimestamp.UnixNano())
 
@@ -1646,7 +1735,7 @@ func makeRecordItem(namespace string, recordID uuid.UUID, recordTimestamp time.T
 	return record, nil
 }
 
-func (d *DB) LookupObjectByID(ctx context.Context, namespaceName string, recordID uuid.UUID) (*dexapi.RecordItem, error) {
+func (d *DB) LookupObjectByRecordID(ctx context.Context, namespaceName string, recordID uuid.UUID) (*dexapi.RecordItem, error) {
 	nsid, err := d.getNamespaceID(namespaceName)
 	if err != nil {
 		return nil, err
@@ -1654,12 +1743,13 @@ func (d *DB) LookupObjectByID(ctx context.Context, namespaceName string, recordI
 
 	var recordTimestamp time.Time
 	var recordData []byte
+	var entityID uuid.UUID
 
 	if err := d.db.QueryRowContext(ctx, `
-		SELECT record_timestamp, record_data
+		SELECT record_timestamp, record_data, entity_id
 		FROM records
 		WHERE namespace_id = $1 AND record_id = $2
-	`, nsid, recordID).Scan(&recordTimestamp, &recordData); err != nil {
+	`, nsid, recordID).Scan(&recordTimestamp, &recordData, &entityID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, dexerror.New(
 				dexerror.WithErrorID("not_found.record"),
@@ -1671,7 +1761,43 @@ func (d *DB) LookupObjectByID(ctx context.Context, namespaceName string, recordI
 		return nil, err
 	}
 
-	recorditem, err := makeRecordItem(namespaceName, recordID, recordTimestamp, recordData)
+	recorditem, err := makeRecordItem(namespaceName, recordID, entityID, recordTimestamp, recordData)
+	if err != nil {
+		return nil, err
+	}
+
+	return &recorditem, nil
+}
+
+func (d *DB) LookupObjectByEntityID(ctx context.Context, namespaceName string, entityID uuid.UUID) (*dexapi.RecordItem, error) {
+	nsid, err := d.getNamespaceID(namespaceName)
+	if err != nil {
+		return nil, err
+	}
+
+	var recordTimestamp time.Time
+	var recordData []byte
+	var recordID uuid.UUID
+
+	if err := d.db.QueryRowContext(ctx, `
+		SELECT record_timestamp, record_data, record_id
+		FROM records
+		WHERE namespace_id = $1 AND entity_id = $2
+		AND  NOT record_is_superseded
+		AND  NOT record_is_deletion_marker
+	`, nsid, entityID).Scan(&recordTimestamp, &recordData, &recordID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("not_found.record"),
+				dexerror.WithHTTPCode(http.StatusNotFound),
+				dexerror.WithPublicMessage("record not found"),
+				dexerror.WithPublicData("record_id", recordID.String()),
+			)
+		}
+		return nil, err
+	}
+
+	recorditem, err := makeRecordItem(namespaceName, recordID, entityID, recordTimestamp, recordData)
 	if err != nil {
 		return nil, err
 	}
@@ -1769,7 +1895,7 @@ func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fiel
 
 	qb := newQueryBuilder((nsid))
 
-	qb.selectClause = "records.record_id, records.record_timestamp, records.record_data"
+	qb.selectClause = "records.record_id, records.entity_id, records.record_timestamp, records.record_data"
 
 	qb.limit = 2
 
@@ -1804,10 +1930,11 @@ func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fiel
 
 	for rows.Next() {
 		var recordID uuid.UUID
+		var entityID uuid.UUID
 		var recordTimestamp time.Time
 		var recordData []byte
 
-		if err := rows.Scan(&recordID, &recordTimestamp, &recordData); err != nil {
+		if err := rows.Scan(&recordID, &entityID, &recordTimestamp, &recordData); err != nil {
 			return nil, err
 		}
 
@@ -1821,7 +1948,7 @@ func (d *DB) LookupObjectByField(ctx context.Context, namespaceName string, fiel
 			)
 		}
 
-		item, err := makeRecordItem(namespaceName, recordID, recordTimestamp, recordData)
+		item, err := makeRecordItem(namespaceName, recordID, entityID, recordTimestamp, recordData)
 		if err != nil {
 			return nil, err
 		}

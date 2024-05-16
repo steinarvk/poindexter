@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -140,74 +141,88 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 	getCmd := &cobra.Command{
 		Use:   "get [namespace] [ID-or-field] [field-value]?",
 		Short: "Get a record",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 2 && len(args) != 3 {
-				return fmt.Errorf("expected 2 or 3 arguments; got %d", len(args))
+	}
+	getCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) != 2 && len(args) != 3 {
+			return fmt.Errorf("expected 2 or 3 arguments; got %d", len(args))
+		}
+
+		namespace := args[0]
+
+		client, err := getClient(ctx, dexclient.Selector{
+			Namespace:   namespace,
+			AccessGroup: "query",
+		})
+		if err != nil {
+			return err
+		}
+
+		var request *dexclient.Request
+
+		if len(args) == 2 {
+			recordID := args[1]
+
+			recordUUID, err := uuid.Parse(recordID)
+			if err != nil {
+				return fmt.Errorf("ID %q is not a valid UUID: %w", recordID, err)
 			}
 
-			namespace := args[0]
-
-			client, err := getClient(ctx, dexclient.Selector{
-				Namespace:   namespace,
-				AccessGroup: "query",
-			})
+			req, err := client.NewRequest(ctx, "GET", fmt.Sprintf("/query/%s/records/%s/", namespace, recordUUID.String()))
 			if err != nil {
 				return err
 			}
 
-			var request *dexclient.Request
+			request = req
+		} else {
+			fieldName := args[1]
+			fieldValue := args[2]
 
-			if len(args) == 2 {
-				recordID := args[1]
+			normalizedFieldName := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(fieldName), "-", ""), "_", "")
 
-				recordUUID, err := uuid.Parse(recordID)
+			if normalizedFieldName == "ent" || normalizedFieldName == "entity" || normalizedFieldName == "entityid" {
+				entityUUID, err := uuid.Parse(fieldValue)
 				if err != nil {
-					return fmt.Errorf("ID %q is not a valid UUID: %w", recordID, err)
+					return fmt.Errorf("ID %q is not a valid entity UUID: %w", entityUUID, err)
 				}
 
-				req, err := client.NewRequest(ctx, "GET", fmt.Sprintf("/query/%s/records/%s/", namespace, recordUUID.String()))
+				req, err := client.NewRequest(ctx, "GET", fmt.Sprintf("/query/%s/entities/%s/", namespace, entityUUID.String()))
 				if err != nil {
 					return err
 				}
-
 				request = req
 			} else {
-				fieldName := args[1]
-				fieldValue := args[2]
-
 				req, err := client.NewRequest(ctx, "GET", fmt.Sprintf("/query/%s/records/by/%s/%s/", namespace, fieldName, fieldValue))
 				if err != nil {
 					return err
 				}
-
 				request = req
 			}
+		}
 
-			resp, err := client.Do(ctx, request)
-			if err != nil {
-				return err
-			}
+		resp, err := client.Do(ctx, request)
+		if err != nil {
+			return err
+		}
 
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return err
-			}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
 
-			var genericResponse interface{}
-			if err := json.Unmarshal(body, &genericResponse); err != nil {
-				return err
-			}
+		var genericResponse interface{}
+		if err := json.Unmarshal(body, &genericResponse); err != nil {
+			return err
+		}
 
-			marshalled, err := json.MarshalIndent(genericResponse, "", "  ")
-			if err != nil {
-				return err
-			}
+		marshalled, err := json.MarshalIndent(genericResponse, "", "  ")
+		if err != nil {
+			return err
+		}
 
-			os.Stdout.Write(marshalled)
-			os.Stdout.Write([]byte("\n"))
+		os.Stdout.Write(marshalled)
+		os.Stdout.Write([]byte("\n"))
 
-			return nil
-		},
+		return nil
 	}
 	clientCmds.AddCommand(getCmd)
 
@@ -545,7 +560,7 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
-			recordWrapperKeys := []string{"namespace", "record", "record_id", "timestamp", "timestamp_unix_nano"}
+			recordWrapperKeys := []string{"namespace", "record", "record_id", "entity_id", "timestamp", "timestamp_unix_nano"}
 			sort.Strings(recordWrapperKeys)
 			if slices.Equal(keys, recordWrapperKeys) {
 				recordCore, ok := record["record"].(map[string]interface{})
