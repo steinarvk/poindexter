@@ -833,6 +833,7 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 					`
 					UPDATE records
 					SET record_is_superseded_by_id = $1
+					,   record_is_superseded = TRUE
 					WHERE namespace_id = $2 AND record_id = $3
 					`,
 					newID,
