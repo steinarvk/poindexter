@@ -155,6 +155,7 @@ func (s *Server) Run() error {
 	addHandler("GET", "/query/{ns}/entities/{id}/", queryApiHandler{s.lookupEntityByID})
 
 	addHandler("POST", "/ingest/{ns}/record/", ingestApiHandler{s.writeSingleRecordHandler})
+	addHandler("POST", "/ingest/{ns}/upsert/", ingestApiHandler{s.upsertEntityHandler})
 	addHandler("POST", "/ingest/{ns}/jsonl/", ingestApiHandler{s.ingestJSONLHandler})
 	addHandler("POST", "/ingest/{ns}/batches/check/", ingestApiHandler{s.ingestCheckBatchesHandler})
 	addHandler("GET", "/ingest/{ns}/batches/{batch}/", ingestApiHandler{s.ingestCheckBatchHandler})
@@ -728,5 +729,31 @@ func (s *Server) ingestCheckBatchesHandler(namespace string, w http.ResponseWrit
 		Batches: statuses,
 	}
 
+	return json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) upsertEntityHandler(namespace string, w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+
+	var req interface{}
+	if err := s.decodeRequest(r, &req); err != nil {
+		return err
+	}
+
+	// TODO -- theoretically record ID and timestamp are unnecessary here.
+	// Could just autogenerate them if missing?
+
+	response, err := s.db.UpsertEntity(ctx, namespace, req)
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if response.Updated {
+		// The entity has been updated = a record has been created
+		w.WriteHeader(http.StatusCreated)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 	return json.NewEncoder(w).Encode(response)
 }

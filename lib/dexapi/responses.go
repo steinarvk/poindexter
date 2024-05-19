@@ -1,5 +1,7 @@
 package dexapi
 
+import "github.com/google/uuid"
+
 type RecordMetadata struct {
 	Namespace         string `json:"namespace"`
 	RecordID          string `json:"record_id"`
@@ -44,4 +46,12 @@ type IngestionResponse struct {
 	Stats      IngestionStatsResponse     `json:"stats"`
 	ItemStatus []IngestionItemRangeStatus `json:"item_status"`
 	AllOK      bool                       `json:"all_ok"`
+}
+
+type UpsertEntityResponse struct {
+	EntityID           uuid.UUID  `json:"entity_id"`
+	RecordID           uuid.UUID  `json:"record_id"`
+	SupersededRecordID *uuid.UUID `json:"superseded_record_id,omitempty"`
+	Created            bool       `json:"created"`
+	Updated            bool       `json:"updated"`
 }

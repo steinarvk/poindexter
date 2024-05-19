@@ -485,7 +485,7 @@ func (d *DB) insertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, 
 		logger.Sugar().Infof("insertFlattenedRecordsInBatch: %d records", len(recordEntries))
 	}
 
-	result, err := d.internalInsertFlattenedRecordsInBatch(ctx, nsid, recordEntries)
+	result, err := d.internalInsertFlattenedRecordsInBatch(ctx, nsid, recordEntries, nil)
 	if d.options.isVerbose(10) {
 		logger.Sugar().Infof("insertFlattenedRecordsInBatch: %+v %v", summarize(result).Summary, err)
 	}
@@ -493,7 +493,7 @@ func (d *DB) insertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, 
 	return result, err
 }
 
-func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, recordEntries []indexedFlattenedEntry) ([]InsertionResult, error) {
+func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Namespace, recordEntries []indexedFlattenedEntry, enclosingTx *sql.Tx) ([]InsertionResult, error) {
 	// Note that we cannot require that the superseded record exists,
 	// because batches can be arbitrarily reordered.
 	// This should be required in the single-item insertion function.
@@ -502,17 +502,27 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 
 	var results []InsertionResult
 
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
+	var tx *sql.Tx
+
+	if enclosingTx != nil {
+		tx = enclosingTx
+	} else {
+		newTx, err := d.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		tx = newTx
 	}
+
 	var success bool
 
-	defer func() {
-		if !success && tx != nil {
-			tx.Rollback()
-		}
-	}()
+	if enclosingTx == nil {
+		defer func() {
+			if !success && tx != nil {
+				tx.Rollback()
+			}
+		}()
+	}
 
 	if _, err := tx.ExecContext(ctx, "SET CONSTRAINTS ALL DEFERRED"); err != nil {
 		return nil, err
@@ -569,16 +579,18 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		return nil, fmt.Errorf("error getting keys: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("error committing keys: %w", err)
-	}
-	tx = nil
+	if enclosingTx == nil {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("error committing keys: %w", err)
+		}
+		tx = nil
 
-	newTx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("error starting new transaction: %w", err)
+		newTx, err := d.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("error starting new transaction: %w", err)
+		}
+		tx = newTx
 	}
-	tx = newTx
 
 	// Check which superseded records already exist in the database.
 	// Records can be superseded exactly once, but it might be within the batch or in the database.
@@ -887,8 +899,10 @@ func (d *DB) internalInsertFlattenedRecordsInBatch(ctx context.Context, nsid Nam
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("error committing new transaction: %w", err)
+	if enclosingTx == nil {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("error committing new transaction: %w", err)
+		}
 	}
 	success = true
 
@@ -1828,6 +1842,28 @@ func (d *DB) CheckBatch(ctx context.Context, namespaceName string, batchName str
 	return true, nil
 }
 
+func (d *DB) queryRow(ctx context.Context, tx *sql.Tx, queryString string, queryArgs ...interface{}) *sql.Row {
+	contextdata := logging.DataFromContext(ctx)
+	logger := contextdata.Logger
+
+	t0 := time.Now()
+	var row *sql.Row
+	if tx != nil {
+		row = tx.QueryRowContext(ctx, queryString, queryArgs...)
+	} else {
+		row = d.db.QueryRowContext(ctx, queryString, queryArgs...)
+	}
+	duration := time.Since(t0)
+
+	logger.Info(
+		"executed QueryRow",
+		zap.String("query_string", queryString),
+		zap.Duration("duration", duration),
+	)
+
+	return row
+}
+
 func (d *DB) executeQueryRows(ctx context.Context, queryString string, queryArgs []interface{}, safeTwice bool) (*sql.Rows, error) {
 	contextdata := logging.DataFromContext(ctx)
 	logger := contextdata.Logger
@@ -2188,4 +2224,136 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 	}
 
 	return &resp, nil
+}
+
+func (d *DB) UpsertEntity(ctx context.Context, namespaceName string, value interface{}) (*dexapi.UpsertEntityResponse, error) {
+	flattener := d.makeFlattener()
+
+	record, err := flattener.FlattenObject(value)
+	if err != nil {
+		return nil, err
+	}
+
+	if record.EntityUUID == nil {
+		return nil, dexerror.New(
+			dexerror.WithErrorID("bad_request.upsert.missing_entity_id"),
+			dexerror.WithHTTPCode(http.StatusBadRequest),
+			dexerror.WithPublicMessage("upsert: missing entity ID"),
+		)
+	}
+
+	nsid, err := d.getNamespaceID(namespaceName)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	var success bool
+	defer func() {
+		if !success {
+			tx.Rollback()
+		}
+	}()
+
+	// Fetch by entity ID
+
+	var existingRecordID uuid.UUID
+	var existingRecordData []byte
+	var existingRecordTimestamp time.Time
+	var creatingNewRecord bool
+
+	err = d.queryRow(ctx, tx, `
+		SELECT record_id, record_timestamp, record_data
+		FROM records
+		WHERE namespace_id = $1
+		AND entity_id = $2
+		AND record_is_superseded = FALSE
+		AND record_is_deletion_marker = FALSE
+	`, nsid, *record.EntityUUID).Scan(&existingRecordID, &existingRecordTimestamp, &existingRecordData)
+
+	if err == sql.ErrNoRows {
+		creatingNewRecord = true
+	} else if err != nil {
+		return nil, fmt.Errorf("error querying for existing record: %w", err)
+	} else {
+		// Check validity. Timestamp moving forward?
+		if record.Timestamp.Before(existingRecordTimestamp) {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("bad_request.upsert.upsert_timestamp_back"),
+				dexerror.WithHTTPCode(http.StatusBadRequest),
+				dexerror.WithPublicMessage("upsert: refusing to update entity timestamp backwards"),
+				dexerror.WithPublicData("entity_id", record.EntityUUID.String()),
+				dexerror.WithPublicData("new_timestamp", record.Timestamp.Format(time.RFC3339Nano)),
+				dexerror.WithPublicData("existing_timestamp", existingRecordTimestamp.Format(time.RFC3339Nano)),
+			)
+		}
+
+		// Okay, is it different if we ignore timestamp and record ID?
+
+		var existingRecord interface{}
+		if err := json.Unmarshal(existingRecordData, &existingRecord); err != nil {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("internal_error.unmarshal"),
+				dexerror.WithHTTPCode(http.StatusInternalServerError),
+				dexerror.WithInternalMessage("error unmarshalling existing record"),
+			)
+		}
+
+		eq, err := flatten.EqualIgnoringMetadata(existingRecord, value)
+		if err != nil {
+			return nil, err
+		}
+
+		if eq {
+			return &dexapi.UpsertEntityResponse{
+				RecordID: existingRecordID,
+				EntityID: *record.EntityUUID,
+				Created:  false,
+				Updated:  false,
+			}, nil
+		}
+	}
+
+	// Insert new record
+
+	if !creatingNewRecord {
+		if record.SupersedesUUID != nil && *record.SupersedesUUID != existingRecordID {
+			return nil, dexerror.New(
+				dexerror.WithErrorID("bad_request.upsert.supersede_mismatch"),
+				dexerror.WithHTTPCode(http.StatusBadRequest),
+				dexerror.WithPublicMessage("upsert: supersede mismatch"),
+				dexerror.WithPublicData("entity_id", record.EntityUUID.String()),
+				dexerror.WithPublicData("supersede_id", record.SupersedesUUID.String()),
+			)
+		}
+
+		record.SupersedesUUID = &existingRecordID
+	}
+
+	indexedFlattenedEntries := []indexedFlattenedEntry{
+		{
+			index:  RecordIndex(0),
+			record: record,
+		},
+	}
+
+	if _, err := d.internalInsertFlattenedRecordsInBatch(ctx, nsid, indexedFlattenedEntries, tx); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	success = true
+
+	return &dexapi.UpsertEntityResponse{
+		RecordID:           record.RecordUUID,
+		EntityID:           *record.EntityUUID,
+		SupersededRecordID: &existingRecordID,
+		Created:            creatingNewRecord,
+		Updated:            true,
+	}, nil
 }

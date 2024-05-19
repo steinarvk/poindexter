@@ -669,3 +669,70 @@ func (f *Flattener) FlattenObject(unmarshalled interface{}) (*Record, error) {
 		IsDeletionMarker: isDeletionMarker,
 	}, nil
 }
+
+func equalNonRootMap(a, b interface{}) (bool, error) {
+	canonicaljsonA, err := canonicaljson.Marshal(a)
+	if err != nil {
+		return false, err
+	}
+
+	canonicaljsonB, err := canonicaljson.Marshal(b)
+	if err != nil {
+		return false, err
+	}
+
+	return string(canonicaljsonA) == string(canonicaljsonB), nil
+}
+
+func EqualIgnoring(a, b interface{}, ignoreSet map[string]bool) (bool, error) {
+	am, aMap := a.(map[string]interface{})
+	bm, bMap := b.(map[string]interface{})
+	if !aMap || !bMap {
+		return equalNonRootMap(a, b)
+	}
+
+	for k, av := range am {
+		if ignoreSet[k] {
+			continue
+		}
+		bv, ok := bm[k]
+		if !ok {
+			return false, nil
+		}
+		eq, err := equalNonRootMap(av, bv)
+		if err != nil {
+			return false, err
+		}
+		if !eq {
+			return false, nil
+		}
+	}
+
+	for k := range bm {
+		if ignoreSet[k] {
+			continue
+		}
+		_, ok := am[k]
+		if !ok {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+func EqualIgnoringMetadata(a, b interface{}) (bool, error) {
+	m := map[string]bool{}
+
+	for _, fieldName := range validIDFieldNames {
+		m[fieldName] = true
+	}
+	for _, fieldName := range validTimestampFieldNames {
+		m[fieldName] = true
+	}
+	for _, fieldName := range validEntityIDFieldNames {
+		m[fieldName] = true
+	}
+
+	return EqualIgnoring(a, b, m)
+}
