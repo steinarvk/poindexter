@@ -213,12 +213,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
 
-		requestLogger := zap.L().With(
-			zap.String("method", r.Method),
-			zap.String("path", r.URL.Path),
-		)
-
-		requestLogger.Info("processing incoming request")
+		userAgent := r.Header.Get("User-Agent")
 
 		var authClient *config.Client
 
@@ -239,7 +234,15 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 
 		debugHeader := r.Header.Get("X-Debug") == "true"
 
-		requestLogger = requestLogger.With(zap.String("namespace", namespace))
+		requestLogger := zap.L().With(
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("user_agent", userAgent),
+			zap.String("username", username),
+			zap.String("namespace", namespace),
+		)
+
+		requestLogger.Info("processing incoming request")
 
 		r = r.WithContext(logging.NewContextWithLogger(r.Context(), requestLogger, debugHeader))
 
@@ -252,22 +255,25 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 		}
 
 		if authClient == nil {
+			requestLogger.Info("rejecting access due to bad credentials")
 			serveUnauthorized()
 			return
 		}
 
 		if namespace == "" {
+			requestLogger.Info("rejecting access due to missing namespace")
 			serveUnauthorized()
 			return
 		}
 
 		accessLevel, ok := authClient.Access[namespace]
 		if !ok {
+			requestLogger.Info("rejecting access due to unauthorized namespace")
 			serveUnauthorized()
 			return
 		}
 
-		requestLogger.Sugar().Infof("checked access for user %q to namespace %q: %+v", username, namespace, accessLevel)
+		requestLogger.Sugar().Debugf("checked access for user %q to namespace %q: %+v", username, namespace, accessLevel)
 
 		if err := next.CheckAndServeHTTP(accessLevel, namespace, w, r); err != nil {
 			if err == errUnauthorized {

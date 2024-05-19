@@ -944,16 +944,14 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 		sqlDriverName = "postgres"
 	}
 
-	logger.Sugar().Infof("using driver name: %q", sqlDriverName)
+	logger.Sugar().Debugf("using driver name: %q", sqlDriverName)
 
 	rawDB, err := sql.Open(sqlDriverName, connStr)
 	if err != nil {
 		return nil, err
 	}
 
-	if params.Verbosity > 1 {
-		logger.Sugar().Infof("connected to database")
-	}
+	logger.Sugar().Debugf("connected to database")
 
 	nonsensitiveOptions := nonsensitiveOptions{
 		verbosity: params.Verbosity,
@@ -967,9 +965,7 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 		nonsensitiveOptions: nonsensitiveOptions,
 	}
 
-	if params.Verbosity > 0 {
-		logger.Sugar().Infof("configuration: %s", opts.describeOptionsForLogging())
-	}
+	logger.Sugar().Debugf("configuration: %s", opts.describeOptionsForLogging())
 
 	db := &DB{
 		db:      rawDB,
@@ -978,26 +974,20 @@ func Open(ctx context.Context, params Params, sensitiveConfig config.Config) (*D
 	}
 
 	if !opts.nonsensitiveOptions.disableAutoMigrate {
-		if params.Verbosity > 1 {
-			logger.Sugar().Infof("running migrations")
-		}
+		logger.Sugar().Infof("running migrations")
 
-		if err := db.runMigrations(); err != nil {
+		if err := db.runMigrations(ctx); err != nil {
 			return nil, err
 		}
 	}
 
-	if params.Verbosity > 1 {
-		logger.Sugar().Infof("prepopulating namespace cache")
-	}
+	logger.Sugar().Infof("prepopulating namespace cache")
 
 	if err := db.prepopulateNamespaceCache(ctx); err != nil {
 		return nil, err
 	}
 
-	if params.Verbosity > 1 {
-		logger.Sugar().Infof("poindexterdb ready")
-	}
+	logger.Sugar().Infof("poindexterdb ready")
 
 	return db, nil
 }
@@ -1306,15 +1296,15 @@ func (d *DB) GetStats(ctx context.Context) (*Stats, error) {
 		rv.TotalSizeAllIndexes += t.PgIndexesSize
 	}
 
-	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*), SUM(LENGTH(record_data)), MAX(LENGTH(record_data)) FROM records").Scan(&rv.NumRecords, &rv.TotalLengthAllRecords, &rv.MaxRecordLength); err != nil {
+	if err := d.queryRow(ctx, nil, "SELECT COUNT(*), SUM(LENGTH(record_data)), MAX(LENGTH(record_data)) FROM records").Scan(&rv.NumRecords, &rv.TotalLengthAllRecords, &rv.MaxRecordLength); err != nil {
 		return nil, err
 	}
 
-	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM indexing_keys").Scan(&rv.NumIndexingKeys); err != nil {
+	if err := d.queryRow(ctx, nil, "SELECT COUNT(*) FROM indexing_keys").Scan(&rv.NumIndexingKeys); err != nil {
 		return nil, err
 	}
 
-	if err := d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM indexing_data").Scan(&rv.NumIndexingRows); err != nil {
+	if err := d.queryRow(ctx, nil, "SELECT COUNT(*) FROM indexing_data").Scan(&rv.NumIndexingRows); err != nil {
 		return nil, err
 	}
 
@@ -1378,7 +1368,7 @@ func (d *DB) InsertObject(ctx context.Context, namespaceName string, value inter
 	if flat.SupersedesUUID != nil {
 		// Check that the object actually exists.
 		var count int
-		if err := d.db.QueryRowContext(ctx, "SELECT COUNT(record_id) FROM records WHERE namespace_id = $1 AND record_id = $2", nsid, *flat.SupersedesUUID).Scan(&count); err != nil {
+		if err := d.queryRow(ctx, nil, "SELECT COUNT(record_id) FROM records WHERE namespace_id = $1 AND record_id = $2", nsid, *flat.SupersedesUUID).Scan(&count); err != nil {
 			return nil, err
 		}
 
@@ -1760,7 +1750,7 @@ func (d *DB) LookupObjectByRecordID(ctx context.Context, namespaceName string, r
 	var recordData []byte
 	var entityID uuid.UUID
 
-	if err := d.db.QueryRowContext(ctx, `
+	if err := d.queryRow(ctx, nil, `
 		SELECT record_timestamp, record_data, entity_id
 		FROM records
 		WHERE namespace_id = $1 AND record_id = $2
@@ -1794,7 +1784,7 @@ func (d *DB) LookupObjectByEntityID(ctx context.Context, namespaceName string, e
 	var recordData []byte
 	var recordID uuid.UUID
 
-	if err := d.db.QueryRowContext(ctx, `
+	if err := d.queryRow(ctx, nil, `
 		SELECT record_timestamp, record_data, record_id
 		FROM records
 		WHERE namespace_id = $1 AND entity_id = $2
@@ -1828,7 +1818,7 @@ func (d *DB) CheckBatch(ctx context.Context, namespaceName string, batchName str
 
 	var dummy int
 
-	if err := d.db.QueryRowContext(ctx, `
+	if err := d.queryRow(ctx, nil, `
 		SELECT 1
 		FROM processed_batches
 		WHERE namespace_id = $1 AND batch_data_hash = $2

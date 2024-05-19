@@ -148,3 +148,6 @@ func TestEntityUpsert(t *testing.T) {
 		}
 	}
 }
+
+// TODO: trying to upsert wothout changing the record ID, while
+//       still explicitly passing in one, should give an error.
