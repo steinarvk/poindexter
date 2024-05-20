@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/XSAM/otelsql"
@@ -49,10 +50,7 @@ type Server struct {
 
 // NewServer creates a new server with default values and applies given options
 func New(options ...Option) (*Server, error) {
-	s := &Server{
-		host: "127.0.0.1",
-		port: 5244,
-	}
+	s := &Server{}
 	for _, option := range options {
 		err := option(s)
 		if err != nil {
@@ -60,9 +58,39 @@ func New(options ...Option) (*Server, error) {
 		}
 	}
 
+	s.host = s.config.ListenHost
+	if s.host == "" {
+		s.host = "localhost"
+	}
+
+	s.port = s.config.ListenPort
+	if s.port == 0 {
+		s.port = 5244
+	}
+
 	address := fmt.Sprintf("%s:%d", s.host, s.port)
 	s.httpServer = &http.Server{
 		Addr: address,
+	}
+
+	if !s.config.RelaxEnvRestriction {
+		// Env must be set to {"test", "dev", "staging", "prod"}
+		env := s.config.Env
+		acceptableEnv := map[string]struct{}{
+			"test":    {},
+			"dev":     {},
+			"staging": {},
+			"prod":    {},
+		}
+		if _, ok := acceptableEnv[env]; !ok {
+			return nil, fmt.Errorf("invalid env: %q (must be one of %v)", env, acceptableEnv)
+		}
+
+		// Postgres DB name must contain the env name
+		postgresDBName := s.postgresCreds.PostgresDB
+		if !strings.Contains(postgresDBName, env) {
+			return nil, fmt.Errorf("invalid postgres DB name: %q (must contain env name %q)", postgresDBName, env)
+		}
 	}
 
 	driverName, err := otelsql.Register("postgres")
@@ -93,7 +121,7 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) getAcceptableHost() string {
-	return s.config.Host
+	return s.config.AcceptHost
 }
 
 func WithPostgresCreds(creds poindexterdb.PostgresConfig) Option {

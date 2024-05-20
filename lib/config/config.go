@@ -10,10 +10,14 @@ import (
 )
 
 type Config struct {
-	Limits     Limits            `yaml:"limits"`
-	Namespaces []string          `yaml:"namespaces"`
-	Clients    map[string]Client `yaml:"clients"`
-	Host       string            `yaml:"host"`
+	Limits              Limits            `yaml:"limits"`
+	Namespaces          []string          `yaml:"namespaces"`
+	Clients             map[string]Client `yaml:"clients"`
+	AcceptHost          string            `yaml:"accept_host"`
+	ListenHost          string            `yaml:"listen_host"`
+	ListenPort          int               `yaml:"listen_port"`
+	Env                 string            `yaml:"env"`
+	RelaxEnvRestriction bool              `yaml:"relax_env_restriction"`
 }
 
 func (c *Config) setDefaults() error {
