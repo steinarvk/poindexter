@@ -92,6 +92,10 @@ func (s *Server) Close() error {
 	return s.db.Close()
 }
 
+func (s *Server) getAcceptableHost() string {
+	return s.config.Host
+}
+
 func WithPostgresCreds(creds poindexterdb.PostgresConfig) Option {
 	return func(s *Server) error {
 		s.postgresCreds = creds
@@ -235,6 +239,7 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 		debugHeader := r.Header.Get("X-Debug") == "true"
 
 		requestLogger := zap.L().With(
+			zap.String("host", r.Host),
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
 			zap.String("user_agent", userAgent),
@@ -252,6 +257,12 @@ func (s *Server) middleware(next VerifyingApiHandler) http.Handler {
 			leftUntilSecond := time.Until(t0.Add(time.Second))
 			time.Sleep(leftUntilSecond)
 			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+		}
+
+		if r.Host != s.getAcceptableHost() {
+			requestLogger.Info("rejecting access due to bad host", zap.String("expected_host", s.getAcceptableHost()))
+			serveUnauthorized()
+			return
 		}
 
 		if authClient == nil {

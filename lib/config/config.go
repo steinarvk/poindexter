@@ -13,6 +13,7 @@ type Config struct {
 	Limits     Limits            `yaml:"limits"`
 	Namespaces []string          `yaml:"namespaces"`
 	Clients    map[string]Client `yaml:"clients"`
+	Host       string            `yaml:"host"`
 }
 
 func (c *Config) setDefaults() error {
