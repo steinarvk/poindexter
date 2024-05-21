@@ -34,8 +34,8 @@ func (d *DB) runMigrations(ctx context.Context) error {
 	}
 
 	version, dirty, err := m.Version()
-	if err != nil {
-		return fmt.Errorf("unable to run migrations: %w", err)
+	if err != nil && err != migrate.ErrNilVersion {
+		return fmt.Errorf("unable to check current migration status: %w", err)
 	}
 	logger.Info("checked current migration status", zap.Uint("current_version", version), zap.Bool("dirty", dirty))
 
