@@ -123,11 +123,19 @@ func mkClientCommandGroup(ctx context.Context) *cobra.Command {
 	}
 	clientCmds.AddCommand(configCmd)
 
+	var flagServer string
+	var flagUser string
+	clientCmds.PersistentFlags().StringVar(&flagServer, "server", "", "server to choose from config")
+	clientCmds.PersistentFlags().StringVar(&flagUser, "user", "", "user to choose from config")
+
 	getClient := func(ctx context.Context, sel dexclient.Selector) (*dexclient.Client, error) {
 		cfg, err := dexclient.LoadConfig(ctx)
 		if err != nil {
 			return nil, err
 		}
+
+		sel.User = flagUser
+		sel.Server = flagServer
 
 		client, err := dexclient.New(ctx, cfg, sel)
 		if err != nil {
