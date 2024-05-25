@@ -2164,7 +2164,11 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 
 	var resp dexapi.QueryFieldsResponse
 
+	resp.Fields = make([]dexapi.FieldResponse, 0, len(fieldNames))
+
 	var currentField *dexapi.FieldResponse
+
+	sawFields := map[string]bool{}
 
 	for rows.Next() {
 		var fieldName string
@@ -2177,6 +2181,8 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 
 		fieldName = strings.TrimPrefix(fieldName, ".")
 
+		sawFields[fieldName] = true
+
 		if currentField == nil || currentField.Field != fieldName {
 			if currentField != nil {
 				resp.Fields = append(resp.Fields, *currentField)
@@ -2188,7 +2194,7 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 				Field:  fieldName,
 				Type:   "",
 				Count:  &initialCount,
-				Values: nil,
+				Values: []dexapi.ValueResponse{},
 			}
 		}
 
@@ -2211,6 +2217,17 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 
 	if currentField != nil {
 		resp.Fields = append(resp.Fields, *currentField)
+	}
+
+	for _, fieldName := range normFieldNames {
+		if !sawFields[fieldName] {
+			var zerocount int = 0
+			resp.Fields = append(resp.Fields, dexapi.FieldResponse{
+				Field: fieldName,
+				Type:  "",
+				Count: &zerocount,
+			})
+		}
 	}
 
 	return &resp, nil
