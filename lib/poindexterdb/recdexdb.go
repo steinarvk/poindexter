@@ -2223,9 +2223,10 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 		if !sawFields[fieldName] {
 			var zerocount int = 0
 			resp.Fields = append(resp.Fields, dexapi.FieldResponse{
-				Field: fieldName,
-				Type:  "",
-				Count: &zerocount,
+				Field:  fieldName,
+				Type:   "",
+				Count:  &zerocount,
+				Values: []dexapi.ValueResponse{},
 			})
 		}
 	}
