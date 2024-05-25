@@ -45,7 +45,7 @@ type FieldResponse struct {
 	Field  string          `json:"field"`
 	Type   string          `json:"type,omitempty"`
 	Count  *int            `json:"count,omitempty"`
-	Values []ValueResponse `json:"values,omitempty"`
+	Values []ValueResponse `json:"values"`
 }
 
 // some basic queries for fields and values use the
