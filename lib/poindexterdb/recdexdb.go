@@ -2220,6 +2220,7 @@ func (d *DB) QueryValuesList(ctx context.Context, namespace string, q *CompiledQ
 	}
 
 	for _, fieldName := range normFieldNames {
+        fieldName = strings.TrimPrefix(fieldName, ".")
 		if !sawFields[fieldName] {
 			var zerocount int = 0
 			resp.Fields = append(resp.Fields, dexapi.FieldResponse{
